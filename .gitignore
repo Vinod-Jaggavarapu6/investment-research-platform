@@ -27,12 +27,12 @@ node_modules/
 .nuxt/
 out/
 
+# Vite
+frontend/dist/
+frontend/.vite/
+
 # Data — large files not suited for git
-backend/app/data/raw/
-backend/app/data/faiss/
-backend/app/data/chunks_export.txt
-backend/app/data/eval_*.json
-backend/app/data/pipeline_eval_results.json
+backend/data
 
 # Runtime artifacts
 backend/responses.json

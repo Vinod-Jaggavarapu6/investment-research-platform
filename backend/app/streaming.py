@@ -58,9 +58,9 @@ async def research_stream(
 
     initial_state: AgentState = {
         "question": question,
-        "ticker":   ticker.upper(),
+        "ticker":   ticker.upper() if ticker else "",
     }
-    thread_id = f"stream-{ticker.upper()}-{id(question)}"
+    thread_id = f"stream-{ticker.upper() if ticker else 'auto'}-{id(question)}"
     config    = {"configurable": {"thread_id": thread_id}}
 
     nodes_started:   set[str] = set()

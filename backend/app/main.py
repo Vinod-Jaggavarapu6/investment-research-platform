@@ -250,6 +250,44 @@ async def ask_filings(
     }
 
 
+# @app.post(
+#     "/research",
+#     response_model=ResearchResponse,
+#     tags=["Research"],
+#     summary="Multi-agent research pipeline",
+#     description=(
+#         "Routes the question through a LangGraph pipeline — "
+#         "market data agent (yfinance), filings agent (FAISS + Claude), "
+#         "and a synthesis layer producing a unified grounded answer."
+#     ),
+# )
+# async def research(
+#     req: AgentState,
+#     db: AsyncSession = Depends(get_db),
+# ):
+#     from .graph import build_graph          # local import avoids circular deps
+
+#     thread_id = req.thread_id or str(uuid.uuid4())
+#     config    = {"configurable": {"thread_id": thread_id}}
+
+#     graph  = build_graph(db=db, checkpointer=_checkpointer)
+#     result = await graph.ainvoke(
+#         {"question": req.question},
+#         config=config,
+#     )
+
+#     if not result.get("final_answer"):
+#         raise HTTPException(status_code=500, detail="Graph produced no answer")
+
+#     return ResearchResponse(
+#         thread_id    = thread_id,
+#         route        = result.get("route", "unknown"),
+#         final_answer = result["final_answer"],
+#         citations    = result.get("citations") or [],
+#     )
+
+# main.py — fix the /research endpoint signature
+
 @app.post(
     "/research",
     response_model=ResearchResponse,
@@ -262,11 +300,12 @@ async def ask_filings(
     ),
 )
 async def research(
-    req: AgentState,
+    req: ResearchRequest,        # ← was AgentState, must be ResearchRequest
     db: AsyncSession = Depends(get_db),
 ):
-    from .graph import build_graph          # local import avoids circular deps
-
+    
+    from .graph import build_graph
+    
     thread_id = req.thread_id or str(uuid.uuid4())
     config    = {"configurable": {"thread_id": thread_id}}
 
@@ -328,8 +367,8 @@ async def news_sentiment(request: NewsRequest):
     ),
 )
 async def research_stream_endpoint(
-    ticker: str = Query(..., description="Stock ticker, e.g. AAPL"),
     question: str = Query(..., description="Research question"),
+    ticker: str = Query("", description="Stock ticker, e.g. AAPL (optional — extracted from question if omitted)"),
     request: Request = None,
     db: AsyncSession = Depends(get_db),
 ):
