@@ -19,6 +19,7 @@ import random
 import sys
 import time
 from pathlib import Path
+import boto3
 
 import numpy as np
 from openai import OpenAI
@@ -71,8 +72,24 @@ CHUNKS_CACHE  = Path("data/faiss/chunks_cache.json")
 
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 Path("data/faiss").mkdir(parents=True, exist_ok=True)
+import os
 
 
+def upload_index_to_s3() -> None:
+    """Upload the built FAISS index to S3 so ECS backend can download it."""
+    bucket = os.environ.get("S3_BUCKET")
+    if not bucket:
+        raise ValueError("S3_BUCKET environment variable not set")
+    
+    s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+    
+    logger.info(f"Uploading FAISS index to s3://{bucket}/faiss/sec_filings.index...")
+    s3.upload_file(
+        "data/faiss/sec_filings.index",
+        bucket,
+        "faiss/sec_filings.index",
+    )
+    logger.info("Index uploaded successfully")
 # ---------------------------------------------------------------------------
 # Checkpoint helpers — save/load progress so we can resume after interruption
 # ---------------------------------------------------------------------------

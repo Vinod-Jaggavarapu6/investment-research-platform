@@ -99,24 +99,22 @@ def load_index(path: Path = INDEX_PATH) -> faiss.IndexFlatIP:
 
 
 def _download_index_from_s3(path: Path = INDEX_PATH) -> None:
-    """Download FAISS index from S3 — only runs in ECS where file isn't present locally."""
     import boto3
+    import os
 
-    S3_BUCKET    = "investment-research-app-data-244689413519"
-    S3_INDEX_KEY = "faiss/sec_filings.index"
+    bucket = os.environ.get("S3_BUCKET")
+    if not bucket:
+        raise RuntimeError("S3_BUCKET environment variable not set")
+
+    s3_key = "faiss/sec_filings.index"
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        s3 = boto3.client("s3", region_name="us-east-1")
-        s3.download_file(S3_BUCKET, S3_INDEX_KEY, str(path))
-        logger.info(f"FAISS index downloaded from s3://{S3_BUCKET}/{S3_INDEX_KEY}")
+        s3 = boto3.client("s3", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+        s3.download_file(bucket, s3_key, str(path))
+        logger.info(f"FAISS index downloaded from s3://{bucket}/{s3_key}")
     except Exception as e:
-        raise RuntimeError(
-            f"Failed to download FAISS index from S3: {e}\n"
-            f"Either run scripts/build_index.py locally, "
-            f"or ensure the index exists at s3://{S3_BUCKET}/{S3_INDEX_KEY}"
-        )
-
+        raise RuntimeError(f"Failed to download FAISS index from S3: {e}")
 # ---------------------------------------------------------------------------
 # Query — called on every user request
 # ---------------------------------------------------------------------------

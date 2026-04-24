@@ -50,6 +50,36 @@ resource "aws_ecr_lifecycle_policy" "frontend" {
   })
 }
 
+resource "aws_ecr_repository" "indexer" {
+  name                 = "${var.project}-indexer"
+  image_tag_mutability = "MUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "indexer" {
+  repository = aws_ecr_repository.indexer.name
+
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "Keep last 10 images"
+      selection = {
+        tagStatus   = "any"
+        countType   = "imageCountMoreThan"
+        countNumber = 10
+      }
+      action = { type = "expire" }
+    }]
+  })
+}
+
+output "indexer_ecr_url" {
+  value = aws_ecr_repository.indexer.repository_url
+}
+
 output "backend_ecr_url" {
   value = aws_ecr_repository.backend.repository_url
 }

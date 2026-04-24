@@ -101,6 +101,9 @@ resource "aws_ecs_task_definition" "backend" {
       # These reference Terraform outputs — filled in automatically
       { name = "REDIS_HOST",    value = aws_elasticache_cluster.redis.cache_nodes[0].address },
       { name = "DATABASE_URL",  value = "postgresql+asyncpg://postgres:${var.db_password}@${aws_db_instance.postgres.endpoint}/investment_research" },
+      # In aws_ecs_task_definition.backend, add to environment block:
+      { name = "S3_BUCKET",  value = "investment-research-app-data-244689413519" },
+      { name = "AWS_REGION", value = "us-east-1" },
     ]
 
     # Secret config — pulled from Secrets Manager at container start
@@ -159,6 +162,46 @@ resource "aws_ecs_task_definition" "frontend" {
         "awslogs-group"         = aws_cloudwatch_log_group.frontend.name
         "awslogs-region"        = var.aws_region
         "awslogs-stream-prefix" = "frontend"
+      }
+    }
+  }])
+}
+
+# ── Indexer Task Definition ───────────────────────────────────────────────────
+resource "aws_cloudwatch_log_group" "indexer" {
+  name              = "/ecs/${var.project}-indexer"
+  retention_in_days = 30
+}
+
+resource "aws_ecs_task_definition" "indexer" {
+  family                   = "${var.project}-indexer"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "2048"   # 2 vCPU — embedding is CPU intensive
+  memory                   = "8192"   # 8 GB — FAISS + vectors in RAM
+  execution_role_arn       = aws_iam_role.ecs_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([{
+    name  = "indexer"
+    image = "${aws_ecr_repository.indexer.repository_url}:latest"
+
+    environment = [
+      { name = "DATABASE_URL", value = "postgresql+asyncpg://postgres:${var.db_password}@${aws_db_instance.postgres.endpoint}/investment_research" },
+      { name = "S3_BUCKET",    value = "investment-research-app-data-244689413519" },
+      { name = "AWS_REGION",   value = "us-east-1" },
+    ]
+
+    secrets = [
+      { name = "OPENAI_API_KEY", valueFrom = aws_secretsmanager_secret.openai_key.arn },
+    ]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = "/ecs/${var.project}-indexer"
+        "awslogs-region"        = var.aws_region
+        "awslogs-stream-prefix" = "indexer"
       }
     }
   }])
