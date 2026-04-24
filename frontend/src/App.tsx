@@ -29,6 +29,8 @@ export default function App() {
           </div>
         )}
       </main>
+
+      <footer style={styles.footer}>Developed by Vinod</footer>
     </div>
   );
 }
@@ -75,5 +77,13 @@ const styles: Record<string, React.CSSProperties> = {
     border: "1px solid #fca5a5",
     color: "#dc2626",
     fontSize: "14px",
+  },
+  footer: {
+    textAlign: "center",
+    padding: "20px",
+    fontSize: "13px",
+    color: "#9ca3af",
+    borderTop: "1px solid #e5e7eb",
+    background: "#fff",
   },
 };
