@@ -35,7 +35,9 @@ from ..state import AgentState
 logger = logging.getLogger(__name__)
 
 client = wrap_anthropic(anthropic.Anthropic())
-MODEL  = os.getenv("NEWS_AGENT_MODEL", "claude-opus-4-5")
+MODEL           = os.getenv("NEWS_AGENT_MODEL", "claude-opus-4-5")
+NEWS_MAX_TOKENS = int(os.getenv("NEWS_AGENT_MAX_TOKENS", "2000"))
+NEWS_DAYS       = int(os.getenv("NEWS_DAYS_LOOKBACK", "7"))
 
 # ---------------------------------------------------------------------------
 # Tool definition — forces structured per-article scoring
@@ -120,7 +122,7 @@ Rules:
 # Batch articles to avoid context window limits
 # ---------------------------------------------------------------------------
 
-MAX_ARTICLES_PER_BATCH = 15
+MAX_ARTICLES_PER_BATCH = int(os.getenv("NEWS_BATCH_SIZE", "15"))
 
 
 def _format_articles_for_prompt(articles: list[NewsArticle]) -> str:
@@ -159,7 +161,7 @@ def _score_batch(
 
     response = client.messages.create(
         model=MODEL,
-        max_tokens=2000,
+        max_tokens=NEWS_MAX_TOKENS,
         system=SYSTEM_PROMPT,
         tools=[SCORE_ARTICLES_TOOL],
         tool_choice={"type": "any"},
@@ -375,7 +377,7 @@ def make_news_node():
             None,
             analyze_news_sentiment,
             ticker,
-            7,              # default 7 days
+            NEWS_DAYS,
         )
 
         if not result.success:

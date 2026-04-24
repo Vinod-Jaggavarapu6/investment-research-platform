@@ -8,7 +8,7 @@
 
 # logger = logging.getLogger(__name__)
 
-# TRACKED_NODES = {"router", "market_agent", "filings_agent", "news_agent", "synthesizer"}
+# TRACKED_NODES = {"router", "cache_check", "market_agent", "filings_agent", "news_agent", "synthesizer"}
 
 
 # # ── SSE event constructors ─────────────────────────────────────────────────────
@@ -138,12 +138,13 @@ from typing import AsyncGenerator, Any
 
 from app.graph import build_graph
 from app.state import AgentState
-
+from app.cache.cache_keys import full_report_key, CACHE_TTL
+from datetime import timedelta
 
 
 logger = logging.getLogger(__name__)
 
-TRACKED_NODES = {"router", "market_agent", "filings_agent", "news_agent", "synthesizer"}
+TRACKED_NODES = {"router", "cache_check", "market_agent", "filings_agent", "news_agent", "synthesizer"}
 
 
 def _event(type_: str, **kwargs) -> dict:
@@ -173,29 +174,42 @@ async def research_stream(
     question: str,
     ticker:   str,
     db,
+    cache=None,
 ) -> AsyncGenerator[dict, None]:
+
+    # derived_ticker starts empty when the caller omits the ticker param.
+    # The router node (first graph node) extracts it from the question and
+    # writes it to state.  cache_check_node (second graph node) then reads
+    # state["ticker"] to look up the cache — so the check happens at exactly
+    # the right time, after the ticker is known but before any expensive agents run.
+    derived_ticker: str = ticker.upper() if ticker else ""
+    logger.info("stream_start  request_ticker=%r derived_ticker=%r", ticker, derived_ticker)
 
     # This queue is the bridge between the synthesizer callback
     # and the SSE generator. The callback puts tokens here,
     # the generator yields them immediately.
     token_queue: asyncio.Queue[str | None] = asyncio.Queue()
+    assembled_answer: list[str] = []
 
     async def on_token(text: str) -> None:
         """Called directly by synthesizer for each token — zero buffering."""
+        assembled_answer.append(text)
         await token_queue.put(text)
 
-    graph = build_graph(db=db, on_token=on_token)
+    graph = build_graph(db=db, on_token=on_token, cache=cache)
 
     initial_state: AgentState = {
         "question": question,
-        "ticker":   ticker.upper(),
+        "ticker":   derived_ticker,
     }
-    thread_id = f"stream-{ticker.upper()}-{id(question)}"
+    thread_id = f"stream-{derived_ticker or 'auto'}-{id(question)}"
     config    = {"configurable": {"thread_id": thread_id}}
 
     nodes_started:   set[str] = set()
     nodes_completed: set[str] = set()
-    final_answer: str | None  = None
+    final_answer: str | None   = None
+    captured_route: str        = "comprehensive"
+    captured_citations: list   = []
 
     # SSE output queue — collects both node events and tokens
     # so the generator has a single source to yield from
@@ -224,6 +238,19 @@ async def research_stream(
                         if node == "synthesizer" and isinstance(output, dict):
                             nonlocal final_answer
                             final_answer = output.get("final_answer")
+
+                        if node == "router" and isinstance(output, dict):
+                            nonlocal captured_route, derived_ticker
+                            captured_route = output.get("route", "comprehensive")
+                            router_ticker  = (output.get("ticker") or "").upper()
+                            if router_ticker:
+                                derived_ticker = router_ticker
+                            logger.info("router_output  route=%r ticker=%r", captured_route, derived_ticker)
+
+                        if node == "filings_agent" and isinstance(output, dict):
+                            nonlocal captured_citations
+                            captured_citations = output.get("citations") or []
+        # ──────────────────────────────────────────────────────────
         finally:
             await sse_queue.put(None)  # signal done
 
@@ -260,7 +287,45 @@ async def research_stream(
             if item:
                 yield item
 
+        await graph_task
+
+        # assembled_answer is the authoritative source — it's built token-by-token
+        # from the synthesizer callback (or cache_check_node on a cache hit), whereas
+        # final_answer from LangGraph events may not always propagate correctly.
+        if not final_answer and assembled_answer:
+            final_answer = "".join(assembled_answer)
+
+        # Build cache key now — derived_ticker was captured from the router event above.
+        cache_key = full_report_key(derived_ticker, question) if derived_ticker else ""
+
+        # Only write on a cache miss (synthesizer ran). On a cache hit the
+        # cache_check_node short-circuits to END before synthesizer ever starts,
+        # so we don't re-write what's already there.
+        synthesizer_ran = "synthesizer" in nodes_completed
+        logger.info(
+            "cache_set_check has_cache=%s has_answer=%s cache_key=%r ticker=%r synthesizer_ran=%s",
+            cache is not None, bool(final_answer), cache_key, derived_ticker, synthesizer_ran,
+        )
+        if cache and final_answer and cache_key and synthesizer_ran:
+            ok = await cache.set(
+                key=cache_key,
+                value={
+                    "final_answer": final_answer,
+                    "route":        captured_route,
+                    "citations":    captured_citations,
+                },
+                ttl=timedelta(seconds=CACHE_TTL["full_report"]),
+            )
+            logger.info(
+                "cache SET  key=%r ticker=%r route=%r citations=%d answer_len=%d ok=%s",
+                cache_key, derived_ticker, captured_route,
+                len(captured_citations), len(final_answer), ok,
+            )
+    # ──────────────────────────────────────────────────────────────────
+
         yield done_event(final_answer)
+
+ 
 
     except asyncio.CancelledError:
         logger.info("SSE stream cancelled — client disconnected (ticker=%s)", ticker)

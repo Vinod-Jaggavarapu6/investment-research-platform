@@ -27,6 +27,7 @@ load_dotenv()
 client = wrap_anthropic(anthropic.Anthropic())
 
 MODEL = os.getenv("FINANCIAL_AGENT_MODEL", "claude-opus-4-5")
+MAX_TOKENS = int(os.getenv("FINANCIAL_AGENT_MAX_TOKENS", "1500"))
 
 
 # ─────────────────────────────────────────────
@@ -347,7 +348,7 @@ def analyze_ticker(ticker: str, include_raw: bool = False) -> AnalysisResponse:
     try:
         response = client.messages.create(
             model=MODEL,
-            max_tokens=1500,
+            max_tokens=MAX_TOKENS,
             system=SYSTEM_PROMPT,
             tools=[SUBMIT_ANALYSIS_TOOL],
             # "any" = must call a tool (the only tool is submit_analysis)

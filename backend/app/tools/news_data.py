@@ -24,6 +24,8 @@ from app.models import NewsArticle
 
 logger = logging.getLogger(__name__)
 
+NEWS_MAX_ARTICLES = int(os.getenv("NEWS_MAX_ARTICLES", "30"))
+
 # ---------------------------------------------------------------------------
 # Source quality weights
 # ---------------------------------------------------------------------------
@@ -91,7 +93,7 @@ def _fetch_raw_news(
     return client.company_news(ticker, _from=from_date, to=to_date)
 
 
-def fetch_news(ticker: str, days: int = 7, max_articles: int = 50) -> list[NewsArticle]:
+def fetch_news(ticker: str, days: int = 7, max_articles: int = NEWS_MAX_ARTICLES) -> list[NewsArticle]:
     """
     Fetch and normalize company news from Finnhub.
 

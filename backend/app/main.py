@@ -26,8 +26,7 @@ from app.models import (
 )
 from app.streaming import research_stream
 from app.tools.retrieval import init_retrieval, retrieve_chunks, format_retrieval_response
-
-
+from app.cache.redis_client import ResearchCacheClient, RedisConfig
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
@@ -36,6 +35,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 _checkpointer = None
+_cache: ResearchCacheClient | None = None
 
 # ─────────────────────────────────────────────
 # LIFESPAN
@@ -43,7 +43,7 @@ _checkpointer = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _checkpointer
+    global _checkpointer, _cache
 
     logger.info("=== Investment Research Platform — Phase 3 starting ===")
     logger.info(f"ANTHROPIC_API_KEY set: {bool(os.getenv('ANTHROPIC_API_KEY'))}")
@@ -52,6 +52,14 @@ async def lifespan(app: FastAPI):
     await create_tables()
     init_retrieval()
 
+    # RedisConfig reads REDIS_HOST, REDIS_PORT automatically from environment
+    # because of env_prefix = "REDIS_" in its BaseSettings config.
+    # No arguments needed — it picks them up from docker-compose environment block.
+    _cache = ResearchCacheClient(RedisConfig())
+    redis_ok = await _cache.health_check()
+    logger.info(f"Redis connected: {redis_ok}")
+
+
     # Hold the checkpointer connection open for the entire app lifetime
     async with AsyncPostgresSaver.from_conn_string(get_checkpointer_url()) as checkpointer:
         await checkpointer.setup()
@@ -59,6 +67,8 @@ async def lifespan(app: FastAPI):
         logger.info("LangGraph Postgres checkpointer initialized")
 
         yield   # ← app runs here, checkpointer stays open
+
+    await _cache.close()
 
     logger.info("=== Shutting down ===")
 
@@ -305,6 +315,18 @@ async def research(
 ):
     
     from .graph import build_graph
+    from .cache.cache_keys import full_report_key, CACHE_TTL
+    from datetime import timedelta
+
+    ticker = req.ticker.upper().strip() if hasattr(req, "ticker") and req.ticker else ""
+
+    # ── Cache-aside ────────────────────────────────────────────────────
+    cache_key = full_report_key(ticker, req.question)
+    if _cache:
+        cached = await _cache.get(cache_key)
+        if cached:
+            logger.info(f"Cache HIT: {cache_key}")
+            return ResearchResponse(**cached)
     
     thread_id = req.thread_id or str(uuid.uuid4())
     config    = {"configurable": {"thread_id": thread_id}}
@@ -318,12 +340,24 @@ async def research(
     if not result.get("final_answer"):
         raise HTTPException(status_code=500, detail="Graph produced no answer")
 
-    return ResearchResponse(
+    response= ResearchResponse(
         thread_id    = thread_id,
         route        = result.get("route", "unknown"),
         final_answer = result["final_answer"],
         citations    = result.get("citations") or [],
     )
+
+     # ── Store in cache ─────────────────────────────────────────────────
+    if _cache:
+        await _cache.set(
+            key=cache_key,
+            value=response.model_dump(),
+            ttl=timedelta(seconds=CACHE_TTL["full_report"]),
+        )
+        logger.info(f"Cache SET: {cache_key}")
+    # ──────────────────────────────────────────────────────────────────
+
+    return response
 
 
 @app.post(
@@ -347,6 +381,50 @@ async def news_sentiment(request: NewsRequest):
         raise HTTPException(status_code=503, detail=result.error)
 
     return result
+
+
+### ══════════════════════════════════════════════════════
+### Cache debug endpoints
+### ══════════════════════════════════════════════════════
+
+@app.get("/cache/debug", tags=["Cache"], summary="Inspect a cache entry")
+async def cache_debug_get(
+    ticker:   str = Query(..., description="Ticker symbol, e.g. AAPL"),
+    question: str = Query(..., description="Research question"),
+):
+    from .cache.cache_keys import full_report_key
+    if not _cache:
+        raise HTTPException(status_code=503, detail="Cache not initialised")
+    key = full_report_key(ticker.upper().strip(), question)
+    exists = await _cache.exists(key)
+    value  = await _cache.get(key) if exists else None
+    return {
+        "key":    key,
+        "exists": exists,
+        "value":  value,
+    }
+
+
+@app.delete("/cache/debug", tags=["Cache"], summary="Evict a cache entry")
+async def cache_debug_delete(
+    ticker:   str = Query(..., description="Ticker symbol"),
+    question: str = Query(..., description="Research question"),
+):
+    from .cache.cache_keys import full_report_key
+    if not _cache:
+        raise HTTPException(status_code=503, detail="Cache not initialised")
+    key = full_report_key(ticker.upper().strip(), question)
+    ok  = await _cache.delete(key)
+    logger.info("cache EVICT key=%r ok=%s", key, ok)
+    return {"key": key, "deleted": ok}
+
+
+@app.get("/cache/health", tags=["Cache"], summary="Redis ping")
+async def cache_health():
+    if not _cache:
+        raise HTTPException(status_code=503, detail="Cache not initialised")
+    ok = await _cache.health_check()
+    return {"redis_ok": ok}
 
 
 ### ══════════════════════════════════════════════════════
@@ -393,6 +471,7 @@ async def research_stream_endpoint(
             question=question,
             ticker=ticker,
             db=db,                  # ← was db_pool, matches streaming.py param name
+            cache=_cache,
         ):
             if await request.is_disconnected():
                 logger.info(

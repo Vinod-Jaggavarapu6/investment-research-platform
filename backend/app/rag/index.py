@@ -86,17 +86,36 @@ def save_index(index: faiss.IndexFlatIP, path: Path = INDEX_PATH) -> None:
 def load_index(path: Path = INDEX_PATH) -> faiss.IndexFlatIP:
     """
     Load the FAISS index from disk.
+    If not found locally (ECS environment), download from S3 first.
     Called once on FastAPI startup — index lives in RAM for the app lifetime.
     """
     if not path.exists():
-        raise FileNotFoundError(
-            f"FAISS index not found at {path}. "
-            f"Run scripts/build_index.py first."
-        )
+        logger.info(f"FAISS index not found at {path} — attempting S3 download...")
+        _download_index_from_s3(path)
+
     index = faiss.read_index(str(path))
     logger.info(f"Loaded FAISS index from {path}. Vectors: {index.ntotal}")
     return index
 
+
+def _download_index_from_s3(path: Path = INDEX_PATH) -> None:
+    """Download FAISS index from S3 — only runs in ECS where file isn't present locally."""
+    import boto3
+
+    S3_BUCKET    = "investment-research-app-data-244689413519"
+    S3_INDEX_KEY = "faiss/sec_filings.index"
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.download_file(S3_BUCKET, S3_INDEX_KEY, str(path))
+        logger.info(f"FAISS index downloaded from s3://{S3_BUCKET}/{S3_INDEX_KEY}")
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to download FAISS index from S3: {e}\n"
+            f"Either run scripts/build_index.py locally, "
+            f"or ensure the index exists at s3://{S3_BUCKET}/{S3_INDEX_KEY}"
+        )
 
 # ---------------------------------------------------------------------------
 # Query — called on every user request

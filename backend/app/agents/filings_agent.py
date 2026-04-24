@@ -31,8 +31,9 @@ logger = logging.getLogger(__name__)
 # Config
 # ---------------------------------------------------------------------------
 
-MODEL      = os.getenv("FILINGS_AGENT_MODEL", "claude-opus-4-5")
-MAX_TOKENS = 1024
+MODEL           = os.getenv("FILINGS_AGENT_MODEL", "claude-opus-4-5")
+MAX_TOKENS      = int(os.getenv("FILINGS_AGENT_MAX_TOKENS", "1024"))
+RETRIEVAL_K     = int(os.getenv("FILINGS_RETRIEVAL_K", "5"))
 
 SYSTEM_PROMPT = """You are a financial research analyst specializing in SEC filings.
 
@@ -180,7 +181,7 @@ def make_filings_node(db: AsyncSession):
             question=state["question"],
             db=db,
             ticker=state.get("ticker"),
-            k=5,
+            k=RETRIEVAL_K,
         )
         return {
             "filings_output": result.answer,

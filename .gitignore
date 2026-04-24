@@ -37,6 +37,9 @@ backend/data
 # Runtime artifacts
 backend/responses.json
 
+# Local config overrides
+frontend/nginx.local.conf
+
 # Misc
 .DS_Store
 *.log

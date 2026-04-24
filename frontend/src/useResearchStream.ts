@@ -69,6 +69,7 @@ function applyEvent(state: ResearchState, event: SSEEvent): ResearchState {
   switch (event.type) {
     case "node_start": {
       const node = event.node as NodeName;
+      if (!state.nodes[node]) return state;
       const visibleNodes = state.visibleNodes.includes(node)
         ? state.visibleNodes
         : [...state.visibleNodes, node];
@@ -84,6 +85,7 @@ function applyEvent(state: ResearchState, event: SSEEvent): ResearchState {
 
     case "node_complete": {
       const node = event.node as NodeName;
+      if (!state.nodes[node]) return state;
       const updatedNodes = {
         ...state.nodes,
         [node]: { ...state.nodes[node], status: "done", data: event.data },

@@ -8,7 +8,8 @@ from ..state import AgentState
 
 client = wrap_openai(AsyncOpenAI())
 
-MODEL = os.getenv("SYNTHESIZER_MODEL", "gpt-4o-mini")
+MODEL      = os.getenv("SYNTHESIZER_MODEL", "gpt-4o-mini")
+MAX_TOKENS = int(os.getenv("SYNTHESIZER_MAX_TOKENS", "1024"))
 
 SYNTH_SYSTEM = """You are a senior investment analyst synthesizing research from multiple sources:
 1. Live market data (prices, ratios, recent performance)
@@ -42,7 +43,7 @@ def make_synthesizer_node(
 
         stream = await client.chat.completions.create(
             model=MODEL,
-            max_tokens=1024,
+            max_tokens=MAX_TOKENS,
             stream=True,
             messages=[
                 {"role": "system", "content": SYNTH_SYSTEM},
@@ -65,54 +66,6 @@ def make_synthesizer_node(
                 if on_token is not None:
                     # Call immediately — no queue, no batching
                     await on_token(delta)
-
-        return {"final_answer": "".join(chunks)}
-
-    return synthesizer_node
-    """
-    Returns a synthesizer node function.
-    If token_queue is provided, each token is put into the queue as it
-    streams — consumed by the SSE generator in streaming.py.
-    If token_queue is None (POST /research path), tokens are just
-    accumulated internally with no side effects.
-    """
-
-    async def synthesizer_node(state: AgentState) -> dict:
-        parts = []
-
-        if state.get("market_output"):
-            parts.append(f"## Live Market Data\n{state['market_output']}")
-        if state.get("filings_output"):
-            parts.append(f"## SEC Filing Research\n{state['filings_output']}")
-        if state.get("news_output"):
-            parts.append(f"## Recent News Sentiment\n{state['news_output']}")
-
-        combined = "\n\n".join(parts)
-
-        stream = await client.chat.completions.create(
-            model=MODEL,
-            max_tokens=1024,
-            stream=True,                    # ← always stream from OpenAI
-            messages=[
-                {"role": "system", "content": SYNTH_SYSTEM},
-                {
-                    "role": "user",
-                    "content": (
-                        f"Original question: {state['question']}\n\n"
-                        f"Research collected:\n{combined}\n\n"
-                        "Synthesize a final answer."
-                    ),
-                },
-            ],
-        )
-
-        chunks: list[str] = []
-        async for chunk in stream:
-            delta = chunk.choices[0].delta.content
-            if delta:
-                chunks.append(delta)
-                if token_queue is not None:
-                    await token_queue.put(delta)    # ← feed SSE queue
 
         return {"final_answer": "".join(chunks)}
 
