@@ -1,7 +1,6 @@
 import { useResearchStream } from "./useResearchStream";
 import { SearchBar } from "./components/SearchBar";
 import { AgentTimeline } from "./components/AgentTimeline";
-import { FinalReport } from "./components/FinalReport";
 
 export default function App() {
   const { state, start } = useResearchStream();
@@ -20,14 +19,13 @@ export default function App() {
       <main style={styles.main}>
         <SearchBar onSubmit={(q) => start(q)} disabled={isStreaming} />
 
+        {state?.errorMsg && (
+          <div style={styles.error}>Error: {state.errorMsg}</div>
+        )}
+
         {state && (
           <div style={styles.results}>
             <AgentTimeline research={state} />
-            <FinalReport
-              report={state.finalReport}
-              errorMsg={state.errorMsg}
-              streamingTokens={state.nodes.synthesizer.tokens || undefined}
-            />
           </div>
         )}
       </main>
@@ -69,5 +67,13 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     flexDirection: "column",
     gap: "12px",
+  },
+  error: {
+    padding: "12px 16px",
+    borderRadius: "8px",
+    background: "#fef2f2",
+    border: "1px solid #fca5a5",
+    color: "#dc2626",
+    fontSize: "14px",
   },
 };

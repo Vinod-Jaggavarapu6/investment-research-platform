@@ -1,6 +1,10 @@
 import { useState, useRef, useCallback } from "react";
 import type { SSEEvent, ResearchState, NodeName } from "./types";
-import { makeInitialResearchState } from "./types";
+import {
+  makeInitialResearchState,
+  DEFAULT_VISIBLE_NODES,
+  ROUTE_NODES,
+} from "./types";
 
 export function useResearchStream() {
   const [state, setState] = useState<ResearchState | null>(null);
@@ -60,12 +64,17 @@ export function useResearchStream() {
 }
 
 // Pure state reducer — applies one SSE event to ResearchState
+
 function applyEvent(state: ResearchState, event: SSEEvent): ResearchState {
   switch (event.type) {
     case "node_start": {
       const node = event.node as NodeName;
+      const visibleNodes = state.visibleNodes.includes(node)
+        ? state.visibleNodes
+        : [...state.visibleNodes, node];
       return {
         ...state,
+        visibleNodes,
         nodes: {
           ...state.nodes,
           [node]: { ...state.nodes[node], status: "running" },
@@ -75,17 +84,24 @@ function applyEvent(state: ResearchState, event: SSEEvent): ResearchState {
 
     case "node_complete": {
       const node = event.node as NodeName;
-      return {
-        ...state,
-        nodes: {
-          ...state.nodes,
-          [node]: { ...state.nodes[node], status: "done", data: event.data },
-        },
+      const updatedNodes = {
+        ...state.nodes,
+        [node]: { ...state.nodes[node], status: "done", data: event.data },
       };
+
+      // When router completes, we know the route — reveal the right nodes
+      let visibleNodes = state.visibleNodes;
+      let route = state.route;
+
+      if (node === "router" && event.data?.route) {
+        route = event.data.route as string;
+        visibleNodes = ROUTE_NODES[route] ?? DEFAULT_VISIBLE_NODES;
+      }
+
+      return { ...state, nodes: updatedNodes, route, visibleNodes };
     }
 
     case "token": {
-      // Tokens only come from synthesizer
       return {
         ...state,
         nodes: {
@@ -99,19 +115,11 @@ function applyEvent(state: ResearchState, event: SSEEvent): ResearchState {
     }
 
     case "done": {
-      return {
-        ...state,
-        phase: "done",
-        finalReport: event.report,
-      };
+      return { ...state, phase: "done", finalReport: event.report };
     }
 
     case "error": {
-      return {
-        ...state,
-        phase: "error",
-        errorMsg: event.message,
-      };
+      return { ...state, phase: "error", errorMsg: event.message };
     }
 
     default:

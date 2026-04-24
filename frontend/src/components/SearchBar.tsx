@@ -17,18 +17,28 @@ export function SearchBar({ onSubmit, disabled }: Props) {
   return (
     <form onSubmit={handleSubmit} style={styles.form}>
       <input
-        style={{ ...styles.input, flex: 1 }}
+        style={{
+          ...styles.input,
+          flex: 1,
+          opacity: disabled ? 0.5 : 1,
+          cursor: disabled ? "not-allowed" : "text",
+          background: disabled ? "#f3f4f6" : "#fff",
+        }}
         placeholder="Enter a Research question like  What is Apple's revenue trend?"
         value={question}
         onChange={(e) => setQuestion(e.target.value)}
         disabled={disabled}
       />
       <button
-        style={styles.button}
+        style={{
+          ...styles.button,
+          opacity: disabled || !question ? 0.5 : 1,
+          cursor: disabled ? "not-allowed" : "pointer",
+        }}
         type="submit"
         disabled={disabled || !question}
       >
-        {disabled ? "Streaming…" : "Research"}
+        {disabled ? "Researching…" : "Research"}
       </button>
     </form>
   );

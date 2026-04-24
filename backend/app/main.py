@@ -402,4 +402,10 @@ async def research_stream_endpoint(
 
             yield sse_event
 
-    return EventSourceResponse(event_generator())
+    return EventSourceResponse(
+        event_generator(),
+        headers={
+            "X-Accel-Buffering": "no",     
+            "Cache-Control":     "no-cache",
+        },
+    )

@@ -1,19 +1,22 @@
 import { AgentCard } from "./AgentCard";
-import type { ResearchState } from "../types";
-import { NODE_ORDER, NODE_LABELS } from "../types";
+import type { ResearchState, NodeName } from "../types";
+import { NODE_LABELS } from "../types";
 
 interface Props {
   research: ResearchState;
 }
 
 export function AgentTimeline({ research }: Props) {
+  const { visibleNodes, nodes } = research;
+
   return (
     <div style={styles.timeline}>
-      {NODE_ORDER.map((node) => (
+      {visibleNodes.map((node) => (
         <AgentCard
           key={node}
+          name={node}
           label={NODE_LABELS[node]}
-          state={research.nodes[node]}
+          state={nodes[node]}
         />
       ))}
     </div>

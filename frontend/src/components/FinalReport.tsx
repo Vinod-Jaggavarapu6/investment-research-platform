@@ -17,14 +17,24 @@ export function FinalReport({ report, errorMsg, streamingTokens }: Props) {
     );
   }
 
+  // Show streaming tokens as they arrive, then swap to final report
   const content = report ?? streamingTokens;
   if (!content) return null;
 
   const isStreaming = !report && !!streamingTokens;
 
   return (
-    <div style={styles.box}>
-      <h2 style={styles.heading}>Research Report</h2>
+    <div
+      style={{
+        ...styles.box,
+        borderColor: isStreaming ? "#a5b4fc" : "#e5e7eb",
+        transition: "border-color 0.3s ease",
+      }}
+    >
+      <div style={styles.headingRow}>
+        <h2 style={styles.heading}>Research Report</h2>
+        {isStreaming && <span style={styles.streamingBadge}>● Live</span>}
+      </div>
       <div style={styles.markdown}>
         <Markdown>{content}</Markdown>
         {isStreaming && <span style={styles.cursor}>▋</span>}
@@ -40,10 +50,23 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: "8px",
     background: "#fff",
   },
+  headingRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    marginBottom: "16px",
+  },
   heading: {
-    margin: "0 0 16px",
+    margin: 0,
     fontSize: "16px",
     fontWeight: "600",
+  },
+  streamingBadge: {
+    fontSize: "11px",
+    fontWeight: "500",
+    color: "#6366f1",
+    animation: "blink 1.5s ease infinite",
+    letterSpacing: "0.05em",
   },
   markdown: {
     fontSize: "14px",

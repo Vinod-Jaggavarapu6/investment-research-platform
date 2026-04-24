@@ -1,3 +1,21 @@
+// Which nodes run for each route — matches graph.py logic exactly
+export const ROUTE_NODES: Record<string, NodeName[]> = {
+  market: ["router", "market_agent", "synthesizer"],
+  filings: ["router", "filings_agent", "synthesizer"],
+  news: ["router", "news_agent", "synthesizer"],
+  both: ["router", "market_agent", "filings_agent", "synthesizer"],
+  comprehensive: [
+    "router",
+    "market_agent",
+    "filings_agent",
+    "news_agent",
+    "synthesizer",
+  ],
+};
+
+// Before route is known, show only router as running
+export const DEFAULT_VISIBLE_NODES: NodeName[] = ["router"];
+
 // Agent node names — must match backend TRACKED_NODES
 export type NodeName =
   | "router"
@@ -20,8 +38,8 @@ export type SSEEvent =
 // UI state for a single agent node
 export interface AgentState {
   status: NodeStatus;
-  data: Record<string, unknown> | null; // from node_complete
-  tokens: string; // accumulated synthesizer tokens
+  data: Record<string, unknown> | null;
+  tokens: string;
 }
 
 // Full research session state
@@ -30,6 +48,8 @@ export interface ResearchState {
   nodes: Record<NodeName, AgentState>;
   finalReport: string | null;
   errorMsg: string | null;
+  route: string | null;
+  visibleNodes: NodeName[];
 }
 
 // Display labels for each node
@@ -41,7 +61,32 @@ export const NODE_LABELS: Record<NodeName, string> = {
   synthesizer: "Synthesizer",
 };
 
-// Ordered list for timeline rendering
+// Loading messages shown while each node is running
+export const NODE_LOADING_MESSAGES: Record<NodeName, string[]> = {
+  router: [
+    "Analyzing your question…",
+    "Identifying ticker…",
+    "Selecting research route…",
+  ],
+  market_agent: [
+    "Fetching live market data…",
+    "Pulling price and ratios…",
+    "Analyzing market metrics…",
+  ],
+  filings_agent: [
+    "Searching SEC filings…",
+    "Scanning 10-K documents…",
+    "Retrieving relevant excerpts…",
+  ],
+  news_agent: [
+    "Scanning recent headlines…",
+    "Scoring news sentiment…",
+    "Weighing source quality…",
+  ],
+  synthesizer: ["Synthesizing research…", "Drafting your report…"],
+};
+
+// Ordered list for timeline rendering — defines display order
 export const NODE_ORDER: NodeName[] = [
   "router",
   "market_agent",
@@ -61,6 +106,8 @@ export function makeInitialResearchState(): ResearchState {
     phase: "streaming",
     errorMsg: null,
     finalReport: null,
+    route: null,
+    visibleNodes: ["router"], // only router shown until route is known
     nodes: {
       router: { ...INITIAL_NODE_STATE },
       market_agent: { ...INITIAL_NODE_STATE },
