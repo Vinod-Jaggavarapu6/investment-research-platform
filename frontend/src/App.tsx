@@ -38,6 +38,8 @@ export default function App() {
 const styles: Record<string, React.CSSProperties> = {
   page: {
     minHeight: "100vh",
+    display: "flex",
+    flexDirection: "column",
     background: "#f9fafb",
     fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
     color: "#111827",
@@ -59,11 +61,13 @@ const styles: Record<string, React.CSSProperties> = {
   },
   main: {
     maxWidth: "860px",
+    width: "100%",
     margin: "0 auto",
     padding: "32px 24px",
     display: "flex",
     flexDirection: "column",
     gap: "24px",
+    flex: 1,
   },
   results: {
     display: "flex",
