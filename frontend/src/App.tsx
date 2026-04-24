@@ -10,7 +10,7 @@ export default function App() {
   return (
     <div style={styles.page}>
       <header style={styles.header}>
-        <h1 style={styles.title}>Investment Research</h1>
+        <h1 style={styles.title}>Investment Research Agentic Platform</h1>
         <p style={styles.sub}>
           Multi-agent analysis · SEC filings · Live market data · News sentiment
         </p>
