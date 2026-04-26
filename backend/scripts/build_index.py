@@ -137,6 +137,11 @@ async def main() -> None:
     await create_tables()
     openai_client = get_client()
 
+    # Always clear the embed cache at the start of a full rebuild.
+    # Stale cache entries would re-use embeddings computed with the old
+    # chunk content (different size / no prefix) — silently wrong results.
+    clear_cache()
+
     # -------------------------------------------------------------------
     # Phase 1: Ingest all filing types for all tickers
     # -------------------------------------------------------------------
