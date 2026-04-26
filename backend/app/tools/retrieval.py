@@ -1,174 +1,98 @@
 """
-retrieval.py — FAISS retrieval wrapped as a tool the agent can call
+retrieval.py — pgvector-based semantic search over SEC filing chunks
 
 Flow:
-  1. Embed the user's query using the same model used at index time
-  2. Search FAISS for the k most similar chunk vectors
-  3. Look up the actual chunk text from PostgreSQL using faiss_index
-  4. Return chunks with metadata and similarity scores
+  1. Embed the user's query using the same model used at ingest time
+  2. Run a cosine-distance query against the chunks table via pgvector
+  3. Return the top-k chunks with metadata and similarity scores
 
-Two interfaces:
-  - retrieve_chunks() — async function for direct use in FastAPI
-  - retrieval_tool    — LangChain tool wrapper for the agent
+Ticker filtering is a native WHERE clause — no overfetch or post-filtering needed.
 """
 
 import logging
 from typing import Optional
 
-import numpy as np
 from openai import OpenAI
-from sqlalchemy import select, text
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import Chunk
-from app.rag.embedder import get_client, EMBEDDING_MODEL, EMBEDDING_DIM
-from app.rag.index import search_index, load_index
+from app.rag.embedder import get_client, EMBEDDING_MODEL
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Module-level state — loaded once on FastAPI startup
-# ---------------------------------------------------------------------------
-# The FAISS index lives in RAM for the lifetime of the app.
-# Loading it on every request would be unacceptably slow (disk read each time).
-
-_index = None          # faiss.IndexFlatIP
-_openai_client = None  # openai.OpenAI
+_openai_client: OpenAI | None = None
 
 
-def init_retrieval() -> None:
-    """
-    Load the FAISS index and OpenAI client into module-level variables.
-    Call this once from FastAPI startup — not on every request.
-    """
-    global _index, _openai_client
-    _index         = load_index()
-    _openai_client = get_client()
-    logger.info(f"Retrieval ready. Index has {_index.ntotal} vectors.")
+def _get_openai_client() -> OpenAI:
+    global _openai_client
+    if _openai_client is None:
+        _openai_client = get_client()
+    return _openai_client
 
-
-# ---------------------------------------------------------------------------
-# Core retrieval function
-# ---------------------------------------------------------------------------
 
 async def retrieve_chunks(
-    query: str,
-    db: AsyncSession,
-    ticker: Optional[str] = None,   # filter to a specific company
-    k: int = 5,                     # number of results to return
+    query:  str,
+    db:     AsyncSession,
+    ticker: Optional[str] = None,
+    k:      int = 5,
 ) -> list[dict]:
     """
-    Embed query → search FAISS → fetch chunk text from PostgreSQL.
+    Embed query → pgvector cosine search → return top-k chunks.
 
     Args:
         query:  The user's question in plain English
-        db:     SQLAlchemy async session (injected by FastAPI)
+        db:     SQLAlchemy async session
         ticker: Optional — restrict results to one company e.g. "AAPL"
-        k:      How many chunks to return (top-k by similarity)
+        k:      How many chunks to return
 
     Returns:
-        List of dicts, each containing:
-          - text:        the chunk text
-          - ticker:      company ticker
-          - year:        filing year
-          - section:     e.g. "Item 7"
-          - score:       cosine similarity (0–1, higher = more relevant)
-          - faiss_index: position in the FAISS index
+        List of dicts with text, ticker, year, section, score (0–1).
     """
-    if _index is None or _openai_client is None:
-        raise RuntimeError(
-            "Retrieval not initialized. Call init_retrieval() at startup."
-        )
+    client = _get_openai_client()
+    response = client.embeddings.create(model=EMBEDDING_MODEL, input=query)
+    query_vector = response.data[0].embedding  # list[float], already unit-length
 
-    # ------------------------------------------------------------------
-    # Step 1: Embed the query
-    # Same model, same normalization as at index time — critical.
-    # If you embed with a different model, similarity scores are meaningless.
-    # ------------------------------------------------------------------
-    response = _openai_client.embeddings.create(
-        model=EMBEDDING_MODEL,
-        input=query,
+    distance_expr = Chunk.embedding.cosine_distance(query_vector)
+    stmt = (
+        select(Chunk, distance_expr.label("distance"))
+        .order_by(distance_expr)
+        .limit(k)
     )
-    query_vector = np.array(
-        response.data[0].embedding,
-        dtype=np.float32
-    )
-
-    # Normalize — same as we did for chunk vectors at index time
-    norm = np.linalg.norm(query_vector)
-    if norm > 0:
-        query_vector = query_vector / norm
-
-    # ------------------------------------------------------------------
-    # Step 2: Search FAISS
-    # Returns list of {"faiss_index": int, "score": float}
-    # We fetch more than k if ticker filtering is requested,
-    # because some results may be filtered out by ticker.
-    # ------------------------------------------------------------------
-    fetch_k = k * 4 if ticker else k   # fetch extra to account for filtering
-    faiss_results = search_index(_index, query_vector, k=fetch_k)
-
-    if not faiss_results:
-        logger.warning(f"FAISS returned no results for query: {query!r}")
-        return []
-
-    faiss_indices = [r["faiss_index"] for r in faiss_results]
-    score_map     = {r["faiss_index"]: r["score"] for r in faiss_results}
-
-    # ------------------------------------------------------------------
-    # Step 3: Fetch chunk text from PostgreSQL
-    # We use faiss_index as the bridge — it's unique per chunk and
-    # matches the position in the FAISS index exactly.
-    # ------------------------------------------------------------------
-    stmt = select(Chunk).where(Chunk.faiss_index.in_(faiss_indices))
-
-    # Apply optional ticker filter
     if ticker:
         stmt = stmt.where(Chunk.ticker == ticker.upper())
 
     result = await db.execute(stmt)
-    db_chunks = result.scalars().all()
+    rows   = result.all()
 
-    if not db_chunks:
-        logger.warning(
-            f"No chunks found in PostgreSQL for faiss_indices={faiss_indices} "
-            f"ticker={ticker}"
-        )
+    if not rows:
+        logger.warning("pgvector returned no results for query=%r ticker=%r", query, ticker)
         return []
 
-    # ------------------------------------------------------------------
-    # Step 4: Assemble results, sorted by similarity score
-    # ------------------------------------------------------------------
-    chunks_with_scores = [
+    return [
         {
-            "text":        chunk.text,
-            "ticker":      chunk.ticker,
-            "year":        chunk.year,
-            "section":     chunk.section,
-            "score":       round(score_map[chunk.faiss_index], 4),
-            "faiss_index": chunk.faiss_index,
+            "text":         row.Chunk.text,
+            "ticker":       row.Chunk.ticker,
+            "year":         row.Chunk.year,
+            "section":      row.Chunk.section,
+            "filing_type":  row.Chunk.filing_type,
+            "score":        round(1 - float(row.distance), 4),
         }
-        for chunk in db_chunks
+        for row in rows
     ]
 
-    # Sort by score descending — highest similarity first
-    chunks_with_scores.sort(key=lambda x: x["score"], reverse=True)
 
-    # Return only the top k after filtering
-    return chunks_with_scores[:k]
+async def ticker_has_data(ticker: str, db: AsyncSession) -> bool:
+    """Return True if the DB has any chunks for this ticker."""
+    result = await db.execute(
+        select(func.count()).select_from(Chunk).where(Chunk.ticker == ticker.upper())
+    )
+    return (result.scalar() or 0) > 0
 
-
-# ---------------------------------------------------------------------------
-# FastAPI endpoint helper — formats results for the API response
-# ---------------------------------------------------------------------------
 
 def format_retrieval_response(chunks: list[dict]) -> dict:
-    """
-    Format retrieved chunks into a clean API response.
-    Separates the text content from metadata for clarity.
-    """
     return {
-        "total":   len(chunks),
+        "total":  len(chunks),
         "chunks": [
             {
                 "rank":    i + 1,
@@ -176,10 +100,9 @@ def format_retrieval_response(chunks: list[dict]) -> dict:
                 "ticker":  chunk["ticker"],
                 "year":    chunk["year"],
                 "section": chunk["section"],
-                "text":    chunk["text"][:500] + "..."   # preview only
-                           if len(chunk["text"]) > 500
-                           else chunk["text"],
+                "text":    chunk["text"][:500] + "..."
+                           if len(chunk["text"]) > 500 else chunk["text"],
             }
             for i, chunk in enumerate(chunks)
-        ]
+        ],
     }

@@ -19,7 +19,8 @@ from langsmith import traceable
 import anthropic
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.tools.retrieval import retrieve_chunks
+from app.tools.retrieval import retrieve_chunks, ticker_has_data
+from app.rag.background_ingest import is_ingesting, trigger_ingest
 from langsmith.wrappers import wrap_anthropic
 
 from ..state import AgentState
@@ -37,12 +38,15 @@ RETRIEVAL_K     = int(os.getenv("FILINGS_RETRIEVAL_K", "5"))
 
 SYSTEM_PROMPT = """You are a financial research analyst specializing in SEC filings.
 
-You answer questions based strictly on the provided 10-K excerpts.
+You answer questions based strictly on the provided excerpts from SEC filings
+(10-K annual reports, 10-Q quarterly reports, and 8-K current event reports).
 Your answers must:
   1. Be grounded in the provided context — do not use outside knowledge
-  2. Cite sources using [Ticker YEAR, Section] format after each claim
+  2. Cite sources using [Ticker YEAR Filing-Type, Section] format after each claim
+     e.g. [AAPL 2025 10-K, Item 7] or [MSFT 2024 10-Q, MD&A]
   3. Be concise and direct — lead with the answer, then supporting detail
-  4. Acknowledge if the context does not contain enough information to answer
+  4. Prefer more recent filings (10-Q, 8-K) over annual data when both are present
+  5. Acknowledge if the context does not contain enough information to answer
 
 If the retrieved context does not answer the question, say so explicitly
 rather than guessing or using general knowledge.
@@ -78,7 +82,8 @@ def build_context(chunks: list[dict]) -> str:
 
     parts = []
     for i, chunk in enumerate(chunks, start=1):
-        label = f"[{chunk['ticker']} {chunk['year']}, {chunk['section']}]"
+        filing_type = chunk.get("filing_type", "10-K")
+        label = f"[{chunk['ticker']} {chunk['year']} {filing_type}, {chunk['section']}]"
         parts.append(
             f"--- Source {i}: {label} (relevance: {chunk['score']:.2f}) ---\n"
             f"{chunk['text']}\n"
@@ -121,6 +126,28 @@ async def answer_filing_question(
     )
 
     if not chunks:
+        if ticker:
+            has_data = await ticker_has_data(ticker, db)
+            if not has_data:
+                if is_ingesting(ticker):
+                    answer = (
+                        f"I'm still fetching SEC filings for **{ticker.upper()}**. "
+                        f"This usually takes 30–60 seconds. Please ask again shortly."
+                    )
+                else:
+                    trigger_ingest(ticker)
+                    answer = (
+                        f"I don't have SEC filings for **{ticker.upper()}** yet. "
+                        f"I've started fetching them in the background — "
+                        f"please ask again in about 60 seconds."
+                    )
+                return FilingsAnswer(
+                    question=question,
+                    answer=answer,
+                    ticker=ticker,
+                    sources=[],
+                    model=MODEL,
+                )
         return FilingsAnswer(
             question=question,
             answer="I could not find relevant information in the SEC filings for this question.",
@@ -136,7 +163,7 @@ async def answer_filing_question(
     # ------------------------------------------------------------------
     context = build_context(chunks)
 
-    user_message = f"""Based on the following SEC 10-K excerpts, answer this question:
+    user_message = f"""Based on the following SEC filing excerpts (10-K, 10-Q, 8-K), answer this question:
 
 Question: {question}
 
@@ -144,7 +171,8 @@ Retrieved Context:
 {context}
 
 Provide a clear, concise answer citing the specific sources above.
-Use the format [Ticker YEAR, Section] for citations.
+Use the format [Ticker YEAR Filing-Type, Section] for citations.
+Prefer more recent quarterly (10-Q) or event (8-K) data over annual (10-K) data when relevant.
 If the context is insufficient, say so explicitly."""
 
     # ------------------------------------------------------------------
@@ -183,8 +211,12 @@ def make_filings_node(db: AsyncSession):
             ticker=state.get("ticker"),
             k=RETRIEVAL_K,
         )
+        is_ingest_response = not result.sources and state.get("ticker") and (
+            "fetching" in result.answer.lower() or "ask again" in result.answer.lower()
+        )
         return {
             "filings_output": result.answer,
-            "citations": result.sources,
+            "citations":      result.sources,
+            "skip_cache":     True if is_ingest_response else None,
         }
     return filings_node

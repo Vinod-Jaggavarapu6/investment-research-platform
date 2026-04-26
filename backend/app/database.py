@@ -8,21 +8,21 @@ Responsibilities:
   - Create tables on startup
 """
 
-from sqlalchemy import Column, Integer, String, Text, DateTime
+from sqlalchemy import Column, Integer, String, Text, DateTime, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.sql import func
+from pgvector.sqlalchemy import Vector
 import os
+from pathlib import Path
+from dotenv import load_dotenv
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 # ---------------------------------------------------------------------------
 # Engine — one connection pool shared across the entire app
 # ---------------------------------------------------------------------------
-
-# DATABASE_URL = os.getenv(
-#     "DATABASE_URL",
-#     "postgresql+asyncpg://postgres:postgres@db:5432/investment_research"
-# )
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
@@ -60,25 +60,55 @@ class Base(DeclarativeBase):
 class Chunk(Base):
     __tablename__ = "chunks"
 
-    id          = Column(Integer, primary_key=True, autoincrement=True)
-    text        = Column(Text,        nullable=False)
-    ticker      = Column(String(10),  nullable=False, index=True)
-    year        = Column(Integer,     nullable=False, index=True)
-    section     = Column(String(100), nullable=False)
-    faiss_index = Column(Integer,     nullable=False, unique=True)
-    created_at  = Column(DateTime(timezone=True), server_default=func.now())
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    text         = Column(Text,        nullable=False)
+    ticker       = Column(String(10),  nullable=False, index=True)
+    year         = Column(Integer,     nullable=False, index=True)
+    section      = Column(String(100), nullable=False)
+    filing_type  = Column(String(10),  nullable=False, index=True, server_default="10-K")
+    embedding    = Column(Vector(1536), nullable=True)
+    created_at   = Column(DateTime(timezone=True), server_default=func.now())
 
     def __repr__(self):
         return (
             f"<Chunk ticker={self.ticker} year={self.year} "
-            f"section={self.section} faiss_index={self.faiss_index}>"
+            f"filing_type={self.filing_type} section={self.section}>"
         )
 
 
 async def create_tables():
     """Create all tables if they don't exist. Safe to call on every startup."""
     async with engine.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
+        # Inline migration: add embedding column if upgrading from FAISS schema
+        await conn.execute(text("""
+            DO $$ BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='chunks' AND column_name='faiss_index'
+                ) THEN
+                    ALTER TABLE chunks DROP COLUMN faiss_index;
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='chunks' AND column_name='embedding'
+                ) THEN
+                    ALTER TABLE chunks ADD COLUMN embedding vector(1536);
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name='chunks' AND column_name='filing_type'
+                ) THEN
+                    ALTER TABLE chunks ADD COLUMN filing_type VARCHAR(10) NOT NULL DEFAULT '10-K';
+                END IF;
+            END $$;
+        """))
+        await conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS chunks_embedding_hnsw
+            ON chunks USING hnsw (embedding vector_cosine_ops)
+            WITH (m = 16, ef_construction = 64)
+        """))
 
 
 def get_checkpointer_url() -> str:

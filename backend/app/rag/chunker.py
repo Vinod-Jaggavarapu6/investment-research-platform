@@ -25,6 +25,7 @@ class ChunkRecord:
     ticker:      str    # e.g. "AAPL"
     year:        int    # e.g. 2024
     section:     str    # e.g. "Item 7"
+    filing_type: str    # "10-K", "10-Q", or "8-K"
     chunk_index: int    # position within this filing (0, 1, 2, ...)
 
 
@@ -98,6 +99,7 @@ def chunk_section(
             ticker=section.ticker,
             year=section.year,
             section=section.section,
+            filing_type=section.filing_type,
             chunk_index=start_index + len(records),
         ))
 

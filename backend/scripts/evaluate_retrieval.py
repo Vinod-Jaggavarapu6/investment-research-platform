@@ -22,7 +22,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app.database import AsyncSessionLocal
 from app.rag.embedder import get_client, EMBEDDING_MODEL
-from app.rag.index import load_index, search_index
+# NOTE: evaluate_retrieval.py needs to be updated to use pgvector + chunk.id
+# instead of FAISS positions. The gold_faiss_indices in eval_set.json also
+# need to be regenerated with chunk IDs after the next build_index run.
+from app.tools.retrieval import retrieve_chunks
 
 logging.basicConfig(
     level=logging.WARNING,   # suppress INFO noise during eval

@@ -100,7 +100,12 @@ function applyEvent(state: ResearchState, event: SSEEvent): ResearchState {
         visibleNodes = ROUTE_NODES[route] ?? DEFAULT_VISIBLE_NODES;
       }
 
-      return { ...state, nodes: updatedNodes, route, visibleNodes };
+      const ticker =
+        node === "router" && event.data?.ticker
+          ? (event.data.ticker as string)
+          : state.ticker;
+
+      return { ...state, nodes: updatedNodes, route, ticker, visibleNodes };
     }
 
     case "token": {
@@ -117,7 +122,7 @@ function applyEvent(state: ResearchState, event: SSEEvent): ResearchState {
     }
 
     case "done": {
-      return { ...state, phase: "done", finalReport: event.report };
+      return { ...state, phase: "done", finalReport: event.report, completedAt: Date.now() };
     }
 
     case "error": {

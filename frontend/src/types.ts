@@ -49,7 +49,10 @@ export interface ResearchState {
   finalReport: string | null;
   errorMsg: string | null;
   route: string | null;
+  ticker: string | null;
   visibleNodes: NodeName[];
+  startedAt: number | null;
+  completedAt: number | null;
 }
 
 // Display labels for each node
@@ -107,7 +110,10 @@ export function makeInitialResearchState(): ResearchState {
     errorMsg: null,
     finalReport: null,
     route: null,
-    visibleNodes: ["router"], // only router shown until route is known
+    ticker: null,
+    visibleNodes: ["router"],
+    startedAt: Date.now(),
+    completedAt: null,
     nodes: {
       router: { ...INITIAL_NODE_STATE },
       market_agent: { ...INITIAL_NODE_STATE },

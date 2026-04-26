@@ -25,7 +25,7 @@ from app.models import (
     ResearchRequest, ResearchResponse,
 )
 from app.streaming import research_stream
-from app.tools.retrieval import init_retrieval, retrieve_chunks, format_retrieval_response
+from app.tools.retrieval import retrieve_chunks, format_retrieval_response
 from app.cache.redis_client import ResearchCacheClient, RedisConfig
 logging.basicConfig(
     level=logging.INFO,
@@ -50,7 +50,6 @@ async def lifespan(app: FastAPI):
     logger.info(f"OPENAI_API_KEY set:    {bool(os.getenv('OPENAI_API_KEY'))}")
 
     await create_tables()
-    init_retrieval()
 
     # RedisConfig reads REDIS_HOST, REDIS_PORT automatically from environment
     # because of env_prefix = "REDIS_" in its BaseSettings config.

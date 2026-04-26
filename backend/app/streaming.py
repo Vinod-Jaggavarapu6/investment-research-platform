@@ -210,6 +210,7 @@ async def research_stream(
     final_answer: str | None   = None
     captured_route: str        = "comprehensive"
     captured_citations: list   = []
+    skip_cache: bool           = False
 
     # SSE output queue — collects both node events and tokens
     # so the generator has a single source to yield from
@@ -248,8 +249,10 @@ async def research_stream(
                             logger.info("router_output  route=%r ticker=%r", captured_route, derived_ticker)
 
                         if node == "filings_agent" and isinstance(output, dict):
-                            nonlocal captured_citations
+                            nonlocal captured_citations, skip_cache
                             captured_citations = output.get("citations") or []
+                            if output.get("skip_cache"):
+                                skip_cache = True
         # ──────────────────────────────────────────────────────────
         finally:
             await sse_queue.put(None)  # signal done
@@ -306,7 +309,7 @@ async def research_stream(
             "cache_set_check has_cache=%s has_answer=%s cache_key=%r ticker=%r synthesizer_ran=%s",
             cache is not None, bool(final_answer), cache_key, derived_ticker, synthesizer_ran,
         )
-        if cache and final_answer and cache_key and synthesizer_ran:
+        if cache and final_answer and cache_key and synthesizer_ran and not skip_cache:
             ok = await cache.set(
                 key=cache_key,
                 value={

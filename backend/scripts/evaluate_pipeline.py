@@ -28,8 +28,6 @@ load_dotenv()
 from app.database import AsyncSessionLocal, get_checkpointer_url
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from app.graph import build_graph
-from app.rag.index import load_index
-from app.tools.retrieval import init_retrieval
 
 import langsmith
 from langsmith import Client as LangSmithClient
@@ -578,9 +576,6 @@ async def main():
     print("Loading eval set...")
     questions = load_eval_set()
     print(f"  {len(questions)} questions loaded")
-
-    print("Initializing FAISS index...")
-    init_retrieval()
 
     print("Building graph with Postgres checkpointer...")
     async with AsyncPostgresSaver.from_conn_string(get_checkpointer_url()) as checkpointer:

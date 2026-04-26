@@ -35,25 +35,15 @@ def make_cache_check_node(cache, on_token):
     return cache_check_node
 
 
-def pick_next_after_cache_check(state: AgentState) -> str:
+def pick_agents_for_route(state: AgentState) -> list[str]:
     if state.get("final_answer"):
-        return END
+        return [END]
     route = state.get("route", "both")
-    if route == "market":    return "market_agent"
-    elif route == "filings": return "filings_agent"
-    elif route == "news":    return "news_agent"
-    else:                    return "market_agent"
-
-
-def pick_next_after_market(state: AgentState) -> str:
-    route = state.get("route")
-    if route in ("both", "comprehensive"): return "filings_agent"
-    return "synthesizer"
-
-
-def pick_next_after_filings(state: AgentState) -> str:
-    if state.get("route") == "comprehensive": return "news_agent"
-    return "synthesizer"
+    if route == "market":    return ["market_agent"]
+    elif route == "filings": return ["filings_agent"]
+    elif route == "news":    return ["news_agent"]
+    elif route == "both":    return ["market_agent", "filings_agent"]
+    else:                    return ["market_agent", "filings_agent", "news_agent"]
 
 
 def build_graph(
@@ -76,25 +66,12 @@ def build_graph(
     g.add_edge("router", "cache_check")
     g.add_conditional_edges(
         "cache_check",
-        pick_next_after_cache_check,
-        {
-            "market_agent":  "market_agent",
-            "filings_agent": "filings_agent",
-            "news_agent":    "news_agent",
-            END:             END,
-        },
+        pick_agents_for_route,
+        ["market_agent", "filings_agent", "news_agent", END],
     )
-    g.add_conditional_edges(
-        "market_agent",
-        pick_next_after_market,
-        {"filings_agent": "filings_agent", "synthesizer": "synthesizer"},
-    )
-    g.add_conditional_edges(
-        "filings_agent",
-        pick_next_after_filings,
-        {"news_agent": "news_agent", "synthesizer": "synthesizer"},
-    )
-    g.add_edge("news_agent",  "synthesizer")
-    g.add_edge("synthesizer", END)
+    g.add_edge("market_agent",  "synthesizer")
+    g.add_edge("filings_agent", "synthesizer")
+    g.add_edge("news_agent",    "synthesizer")
+    g.add_edge("synthesizer",   END)
 
     return g.compile(checkpointer=checkpointer or MemorySaver())

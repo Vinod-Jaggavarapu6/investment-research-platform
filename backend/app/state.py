@@ -11,3 +11,4 @@ class AgentState(TypedDict, total=False):
     news_output:    Optional[str]
     citations:      Optional[list[dict]]
     final_answer:   Optional[str]
+    skip_cache:     Optional[bool]
