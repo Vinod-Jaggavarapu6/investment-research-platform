@@ -291,7 +291,7 @@ def analyze_ticker(ticker: str, include_raw: bool = False) -> AnalysisResponse:
     try:
         response = client.chat.completions.create(
             model=MODEL,
-            max_tokens=MAX_TOKENS,
+            max_completion_tokens=MAX_TOKENS,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user",   "content": user_message},

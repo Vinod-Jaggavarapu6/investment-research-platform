@@ -93,6 +93,17 @@ async def ticker_has_data(ticker: str, db: AsyncSession) -> bool:
     return (result.scalar() or 0) > 0
 
 
+async def ticker_has_recent_data(ticker: str, db: AsyncSession) -> bool:
+    """Return True if the DB has 10-Q or 8-K chunks for this ticker."""
+    result = await db.execute(
+        select(func.count())
+        .select_from(Chunk)
+        .where(Chunk.ticker == ticker.upper())
+        .where(Chunk.filing_type.in_(["10-Q", "8-K"]))
+    )
+    return (result.scalar() or 0) > 0
+
+
 def format_retrieval_response(chunks: list[dict]) -> dict:
     return {
         "total":  len(chunks),

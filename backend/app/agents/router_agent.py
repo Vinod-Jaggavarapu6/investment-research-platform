@@ -87,7 +87,7 @@ async def router_node(state: AgentState) -> dict:
     """Classify the question and extract ticker. Sets route and ticker in state."""
     response = await client.chat.completions.create(
         model=MODEL,
-        max_tokens=50,
+        max_completion_tokens=50,
         messages=[
             {"role": "system", "content": ROUTER_SYSTEM},
             {"role": "user", "content": state["question"]},

@@ -31,7 +31,7 @@ DATABASE_URL = os.getenv(
 
 engine = create_async_engine(
     DATABASE_URL,
-    echo=True,       # flip to True to print every SQL query while debugging
+    echo=os.getenv("SQL_ECHO", "false").lower() == "true",
     pool_size=5,
     max_overflow=10,
 )

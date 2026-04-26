@@ -28,12 +28,22 @@ export type NodeName =
 // Per-node status in the UI
 export type NodeStatus = "queued" | "running" | "done" | "error";
 
+// A single SEC filing source returned by the filings agent
+export interface Citation {
+  ticker: string;
+  year: number;
+  section: string;
+  filing_type: string;
+  score: number;
+  text: string;
+}
+
 // SSE event shapes from the backend
 export type SSEEvent =
   | { type: "node_start"; node: NodeName }
   | { type: "node_complete"; node: NodeName; data: Record<string, unknown> }
   | { type: "token"; text: string }
-  | { type: "done"; report: string | null; ingesting_ticker?: string | null }
+  | { type: "done"; report: string | null; ingesting_ticker?: string | null; citations?: Citation[] }
   | { type: "error"; message: string };
 
 // UI state for a single agent node
@@ -48,6 +58,7 @@ export interface ResearchState {
   phase: "idle" | "streaming" | "done" | "error";
   nodes: Record<NodeName, AgentState>;
   finalReport: string | null;
+  citations: Citation[];
   errorMsg: string | null;
   route: string | null;
   ticker: string | null;
@@ -117,6 +128,7 @@ export function makeInitialResearchState(): ResearchState {
     visibleNodes: ["router"],
     startedAt: Date.now(),
     completedAt: null,
+    citations: [],
     ingestPending: false,
     ingestTicker: null,
     nodes: {

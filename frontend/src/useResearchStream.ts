@@ -203,6 +203,7 @@ function applyEvent(state: ResearchState, event: SSEEvent): ResearchState {
         ...state,
         phase: "done",
         finalReport: event.report,
+        citations: event.citations ?? [],
         completedAt: Date.now(),
       };
     }

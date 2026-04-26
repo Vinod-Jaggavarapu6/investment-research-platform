@@ -54,10 +54,17 @@ def make_data_preflight_node(db: AsyncSession):
             logger.info("[preflight] route=%r ticker=%r — no filings needed, passthrough", route, ticker)
             return {}
 
-        from .tools.retrieval import ticker_has_data
+        from .tools.retrieval import ticker_has_data, ticker_has_recent_data
         from .rag.background_ingest import is_ingesting, trigger_ingest
 
-        has_data = await ticker_has_data(ticker, db)
+        # For filings_recent we need 10-Q/8-K chunks, not just any chunks.
+        # A ticker indexed only via an earlier "filings" (10-K) route would
+        # pass the generic check but return empty results at retrieval time.
+        if route == "filings_recent":
+            has_data = await ticker_has_recent_data(ticker, db)
+        else:
+            has_data = await ticker_has_data(ticker, db)
+
         logger.info("[preflight] ticker=%r route=%r has_data=%s is_ingesting=%s",
                     ticker, route, has_data, is_ingesting(ticker))
 

@@ -158,8 +158,12 @@ def node_start_event(node: str)              -> dict: return _event("node_start"
 def node_complete_event(node: str, data: Any)-> dict: return _event("node_complete", node=node, data=data)
 def token_event(text: str)                   -> dict: return _event("token", text=text)
 def error_event(message: str)                -> dict: return _event("error", message=message)
-def done_event(report: Any, ingesting_ticker: str | None = None) -> dict:
-    return _event("done", report=report, ingesting_ticker=ingesting_ticker)
+def done_event(
+    report: Any,
+    ingesting_ticker: str | None = None,
+    citations: list | None = None,
+) -> dict:
+    return _event("done", report=report, ingesting_ticker=ingesting_ticker, citations=citations or [])
 
 
 def _extract_node_output(node: str, output: Any) -> dict:
@@ -347,8 +351,9 @@ async def research_stream(
             logger.info("[stream] cache SKIP — ingest pending for %r", derived_ticker)
 
         ingesting_ticker = derived_ticker if captured_ingest_pending else None
-        logger.info("[stream] done event  ingesting_ticker=%r", ingesting_ticker)
-        yield done_event(final_answer, ingesting_ticker=ingesting_ticker)
+        logger.info("[stream] done event  ingesting_ticker=%r citations=%d",
+                    ingesting_ticker, len(captured_citations))
+        yield done_event(final_answer, ingesting_ticker=ingesting_ticker, citations=captured_citations)
 
     except asyncio.CancelledError:
         logger.info("[stream] cancelled — client disconnected ticker=%r", ticker)

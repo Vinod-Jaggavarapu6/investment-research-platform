@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import Markdown from "react-markdown";
-import type { ResearchState, NodeName, NodeStatus } from "../types";
+import type { ResearchState, NodeName, NodeStatus, Citation } from "../types";
 
 interface Props {
   research: ResearchState;
@@ -16,6 +16,7 @@ export function AgentTimeline({ research }: Props) {
     completedAt,
     ingestPending,
     ingestTicker,
+    citations,
   } = research;
   const elapsed = useElapsed(startedAt, completedAt);
 
@@ -40,6 +41,10 @@ export function AgentTimeline({ research }: Props) {
 
       {ingestPending && ingestTicker && (
         <IngestPollingLine ticker={ingestTicker} />
+      )}
+
+      {phase === "done" && !ingestPending && citations.length > 0 && (
+        <CitationsBlock citations={citations} />
       )}
 
       {phase === "done" && !ingestPending && elapsed > 0 && (
@@ -231,6 +236,32 @@ function IngestPollingLine({ ticker }: { ticker: string }) {
   );
 }
 
+// ── Citations block ────────────────────────────────────────────────────────
+
+function CitationsBlock({ citations }: { citations: Citation[] }) {
+  // Deduplicate by ticker+year+filing_type+section
+  const seen = new Set<string>();
+  const unique = citations.filter((c) => {
+    const key = `${c.ticker}-${c.year}-${c.filing_type}-${c.section}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  return (
+    <div style={styles.citationsBlock}>
+      <span style={styles.citationsLabel}>Sources</span>
+      <div style={styles.citationsList}>
+        {unique.map((c, i) => (
+          <span key={i} style={styles.citationChip}>
+            {c.ticker} {c.year} · {c.filing_type} · {c.section}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── Styles ─────────────────────────────────────────────────────────────────
 
 const styles: Record<string, React.CSSProperties> = {
@@ -310,5 +341,34 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "13px",
     color: "#4b5563",
     lineHeight: 1.55,
+  },
+  citationsBlock: {
+    marginLeft: "26px",
+    paddingLeft: "16px",
+    borderLeft: "2px solid #e5e7eb",
+    display: "flex",
+    flexDirection: "column",
+    gap: "8px",
+  },
+  citationsLabel: {
+    fontSize: "11px",
+    fontWeight: 600,
+    textTransform: "uppercase" as const,
+    letterSpacing: "0.06em",
+    color: "#9ca3af",
+  },
+  citationsList: {
+    display: "flex",
+    flexWrap: "wrap" as const,
+    gap: "6px",
+  },
+  citationChip: {
+    fontSize: "12px",
+    color: "#374151",
+    background: "#f3f4f6",
+    border: "1px solid #e5e7eb",
+    borderRadius: "4px",
+    padding: "2px 8px",
+    whiteSpace: "nowrap" as const,
   },
 };

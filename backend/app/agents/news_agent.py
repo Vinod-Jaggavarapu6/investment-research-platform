@@ -154,7 +154,7 @@ def _score_batch(
 
     response = client.chat.completions.create(
         model=MODEL,
-        max_tokens=NEWS_MAX_TOKENS,
+        max_completion_tokens=NEWS_MAX_TOKENS,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {
