@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import type { SSEEvent, ResearchState, NodeName } from "./types";
 import {
   makeInitialResearchState,
@@ -9,18 +9,26 @@ import {
 export function useResearchStream() {
   const [state, setState] = useState<ResearchState | null>(null);
   const sourceRef = useRef<EventSource | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Ref so the poll callback always calls the latest `start` without stale closure
+  const startFnRef = useRef<(q: string) => void>(() => {});
+
+  const stopPolling = useCallback(() => {
+    if (pollRef.current !== null) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }, []);
 
   const close = useCallback(() => {
     sourceRef.current?.close();
     sourceRef.current = null;
-  }, []);
+    stopPolling();
+  }, [stopPolling]);
 
   const start = useCallback(
     (question: string) => {
-      // Close any in-flight stream before starting a new one
       close();
-
-      // Set optimistic initial state — all nodes queued immediately
       setState(makeInitialResearchState());
 
       const params = new URLSearchParams({ question });
@@ -35,13 +43,78 @@ export function useResearchStream() {
           return;
         }
 
-        setState((prev) => {
-          if (!prev) return prev;
-          return applyEvent(prev, event);
-        });
+        setState((prev) => (prev ? applyEvent(prev, event) : prev));
 
-        // Close the connection cleanly on terminal events
-        if (event.type === "done" || event.type === "error") {
+        if (event.type === "done") {
+          console.log(
+            `[stream] done event received — ingesting_ticker=${event.ingesting_ticker ?? "none"} has_report=${Boolean(event.report)}`,
+          );
+          source.close();
+          sourceRef.current = null;
+
+          if (event.ingesting_ticker) {
+            const ticker = event.ingesting_ticker;
+            const POLL_INTERVAL_MS = 30_000;
+            // Only count "not_found" responses toward the give-up limit.
+            // While status === "ingesting" we keep polling indefinitely —
+            // large companies (e.g. CVX) can take 5-10 min to fully index.
+            let notFoundStreak = 0;
+            const MAX_NOT_FOUND = 4; // give up after ~2 min of no trace of the job
+            console.log(
+              `[ingest] filings not ready for ${ticker} — polling every ${POLL_INTERVAL_MS / 1000}s`,
+            );
+            setState((prev) =>
+              prev
+                ? { ...prev, ingestPending: true, ingestTicker: ticker }
+                : prev,
+            );
+            pollRef.current = setInterval(async () => {
+              try {
+                const res = await fetch(`/ingest/status/${ticker}`);
+                const data: { status: string } = await res.json();
+                console.log(`[ingest] status for ${ticker}: ${data.status}`);
+
+                if (data.status === "ready") {
+                  console.log(`[ingest] ${ticker} filings ready — re-running research`);
+                  stopPolling();
+                  setState((prev) =>
+                    prev ? { ...prev, ingestPending: false } : prev,
+                  );
+                  startFnRef.current(question);
+
+                } else if (data.status === "ingesting") {
+                  // Still running — reset the not-found streak and keep waiting
+                  notFoundStreak = 0;
+
+                } else {
+                  // "not_found" — ingest may have failed or the server restarted
+                  notFoundStreak += 1;
+                  console.warn(
+                    `[ingest] ${ticker} not found (streak ${notFoundStreak}/${MAX_NOT_FOUND})`,
+                  );
+                  if (notFoundStreak >= MAX_NOT_FOUND) {
+                    console.warn(`[ingest] giving up on ${ticker} — no active ingest job found`);
+                    stopPolling();
+                    setState((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            ingestPending: false,
+                            phase: "error",
+                            errorMsg: `Could not index ${ticker} filings. Try asking again manually.`,
+                          }
+                        : prev,
+                    );
+                  }
+                }
+              } catch (err) {
+                console.warn(`[ingest] poll request failed for ${ticker}:`, err);
+              }
+            }, POLL_INTERVAL_MS);
+          }
+        }
+
+        if (event.type === "error") {
           source.close();
           sourceRef.current = null;
         }
@@ -57,8 +130,13 @@ export function useResearchStream() {
         sourceRef.current = null;
       };
     },
-    [close],
+    [close, stopPolling],
   );
+
+  // Keep ref in sync so the poll interval never captures a stale start
+  useEffect(() => {
+    startFnRef.current = start;
+  }, [start]);
 
   return { state, start, stop: close };
 }
@@ -91,7 +169,6 @@ function applyEvent(state: ResearchState, event: SSEEvent): ResearchState {
         [node]: { ...state.nodes[node], status: "done", data: event.data },
       };
 
-      // When router completes, we know the route — reveal the right nodes
       let visibleNodes = state.visibleNodes;
       let route = state.route;
 
@@ -122,7 +199,12 @@ function applyEvent(state: ResearchState, event: SSEEvent): ResearchState {
     }
 
     case "done": {
-      return { ...state, phase: "done", finalReport: event.report, completedAt: Date.now() };
+      return {
+        ...state,
+        phase: "done",
+        finalReport: event.report,
+        completedAt: Date.now(),
+      };
     }
 
     case "error": {

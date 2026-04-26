@@ -33,25 +33,30 @@ def trigger_ingest(ticker: str) -> None:
     """Fire-and-forget: start background ingest if not already running."""
     ticker = ticker.upper()
     if ticker in _ingesting:
+        logger.info("[bg-ingest] Already ingesting %s — skipping duplicate trigger", ticker)
         return
+    # Mark as ingesting synchronously before creating the task so that
+    # is_ingesting() returns True immediately — no race window.
+    _ingesting.add(ticker)
     asyncio.create_task(_ingest_task(ticker))
-    logger.info("[bg-ingest] Queued ingest for %s", ticker)
+    logger.info("[bg-ingest] Triggered ingest for %s (task queued)", ticker)
 
 
 async def _ingest_task(ticker: str) -> None:
-    _ingesting.add(ticker)
-    logger.info("[bg-ingest] Started for %s", ticker)
+    # _ingesting already contains ticker (added synchronously in trigger_ingest)
+    logger.info("[bg-ingest] Task started for %s", ticker)
     try:
         chunks, vectors = await asyncio.to_thread(_sync_ingest, ticker)
         if not chunks:
-            logger.warning("[bg-ingest] No chunks produced for %s", ticker)
+            logger.warning("[bg-ingest] No chunks produced for %s — ingest may have failed", ticker)
             return
         await _store(chunks, vectors)
-        logger.info("[bg-ingest] Done for %s — %d chunks stored", ticker, len(chunks))
+        logger.info("[bg-ingest] Completed for %s — %d chunks stored", ticker, len(chunks))
     except Exception as e:
-        logger.error("[bg-ingest] Failed for %s: %s", ticker, e)
+        logger.error("[bg-ingest] Failed for %s: %s", ticker, e, exc_info=True)
     finally:
         _ingesting.discard(ticker)
+        logger.info("[bg-ingest] Removed %s from in-progress set", ticker)
 
 
 def _sync_ingest(ticker: str) -> tuple:

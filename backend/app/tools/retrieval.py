@@ -32,10 +32,11 @@ def _get_openai_client() -> OpenAI:
 
 
 async def retrieve_chunks(
-    query:  str,
-    db:     AsyncSession,
-    ticker: Optional[str] = None,
-    k:      int = 5,
+    query:        str,
+    db:           AsyncSession,
+    ticker:       Optional[str] = None,
+    k:            int = 5,
+    filing_types: list[str] | None = None,
 ) -> list[dict]:
     """
     Embed query → pgvector cosine search → return top-k chunks.
@@ -61,6 +62,8 @@ async def retrieve_chunks(
     )
     if ticker:
         stmt = stmt.where(Chunk.ticker == ticker.upper())
+    if filing_types:
+        stmt = stmt.where(Chunk.filing_type.in_(filing_types))
 
     result = await db.execute(stmt)
     rows   = result.all()

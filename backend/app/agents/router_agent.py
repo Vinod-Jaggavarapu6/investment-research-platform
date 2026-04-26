@@ -10,12 +10,13 @@ MODEL = os.getenv("ROUTER_AGENT_MODEL", "gpt-4o-mini")
 ROUTER_SYSTEM = """You are a question classifier for a financial research platform.
 Analyze the user's question and return a JSON object with two fields:
 
-1. "route": one of five categories:
-   - "market"        → requires live price, volume, ratios, or current financial metrics
-   - "filings"       → requires information from SEC filings (10-K, 10-Q, earnings, guidance)
-   - "news"          → requires recent news sentiment, headlines, or market buzz
-   - "both"          → requires BOTH live market data AND SEC filing context
-   - "comprehensive" → requires market data, SEC filings, AND recent news sentiment
+1. "route": one of six categories:
+   - "market"          → requires live price, volume, ratios, or current financial metrics
+   - "filings"         → requires information from SEC annual filings (10-K)
+   - "filings_recent"  → specifically asks about recent quarters, latest earnings, last quarter, Q1/Q2/Q3/Q4 results, recent events, or 8-K disclosures
+   - "news"            → requires recent news sentiment, headlines, or market buzz
+   - "both"            → requires BOTH live market data AND SEC filing context
+   - "comprehensive"   → requires market data, SEC filings, AND recent news sentiment
 
 2. "ticker": the stock ticker symbol mentioned in the question (e.g. "AAPL", "MSFT").
    Return null if no specific ticker is mentioned.
@@ -32,12 +33,20 @@ CRITICAL DISTINCTION — route by WHERE the answer comes from, not what words ap
     "What is X's dividend yield?"         → market
     "What is X's debt to equity?"         → market
 
-  FILINGS — answer comes from SEC documents:
+  FILINGS — answer comes from SEC annual reports (10-K):
     "What did X disclose about revenue?"  → filings
     "What did X say about margins?"       → filings
     "What risk factors did X disclose?"   → filings
     "What did X guide for?"               → filings
     "What were X's stated priorities?"    → filings
+
+  FILINGS_RECENT — answer requires recent quarterly (10-Q) or event (8-K) filings:
+    "What happened last quarter?"                    → filings_recent
+    "What were X's latest earnings?"                 → filings_recent
+    "What did X report in Q3?"                       → filings_recent
+    "What did X disclose recently?"                  → filings_recent
+    "Any recent 8-K filings from X?"                 → filings_recent
+    "What was X's revenue in the most recent quarter?" → filings_recent
 
   NEWS — answer comes from recent news and sentiment:
     "What is the news sentiment around X?"          → news
@@ -64,12 +73,13 @@ A plain "What is X's [metric]?" is always MARKET regardless of what the metric i
 Respond with ONLY valid JSON. No preamble, no explanation, no markdown code fences.
 
 Examples:
-  {"route": "market",        "ticker": "AAPL"}
-  {"route": "filings",       "ticker": "MSFT"}
-  {"route": "both",          "ticker": "NVDA"}
-  {"route": "news",          "ticker": "TSLA"}
-  {"route": "comprehensive", "ticker": "AAPL"}
-  {"route": "filings",       "ticker": null}
+  {"route": "market",          "ticker": "AAPL"}
+  {"route": "filings",         "ticker": "MSFT"}
+  {"route": "filings_recent",  "ticker": "NVDA"}
+  {"route": "both",            "ticker": "NVDA"}
+  {"route": "news",            "ticker": "TSLA"}
+  {"route": "comprehensive",   "ticker": "AAPL"}
+  {"route": "filings",         "ticker": null}
 """
 
 
@@ -98,7 +108,7 @@ async def router_node(state: AgentState) -> dict:
         route  = parsed.get("route", "both")
         ticker = parsed.get("ticker")
 
-        if route not in ("market", "filings", "both", "news", "comprehensive"):
+        if route not in ("market", "filings", "filings_recent", "both", "news", "comprehensive"):
             route = "both"
 
     except json.JSONDecodeError:

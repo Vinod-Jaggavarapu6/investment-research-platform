@@ -2,6 +2,7 @@
 export const ROUTE_NODES: Record<string, NodeName[]> = {
   market: ["router", "market_agent", "synthesizer"],
   filings: ["router", "filings_agent", "synthesizer"],
+  filings_recent: ["router", "filings_agent", "synthesizer"],
   news: ["router", "news_agent", "synthesizer"],
   both: ["router", "market_agent", "filings_agent", "synthesizer"],
   comprehensive: [
@@ -32,7 +33,7 @@ export type SSEEvent =
   | { type: "node_start"; node: NodeName }
   | { type: "node_complete"; node: NodeName; data: Record<string, unknown> }
   | { type: "token"; text: string }
-  | { type: "done"; report: string | null }
+  | { type: "done"; report: string | null; ingesting_ticker?: string | null }
   | { type: "error"; message: string };
 
 // UI state for a single agent node
@@ -53,6 +54,8 @@ export interface ResearchState {
   visibleNodes: NodeName[];
   startedAt: number | null;
   completedAt: number | null;
+  ingestPending: boolean;
+  ingestTicker: string | null;
 }
 
 // Display labels for each node
@@ -114,6 +117,8 @@ export function makeInitialResearchState(): ResearchState {
     visibleNodes: ["router"],
     startedAt: Date.now(),
     completedAt: null,
+    ingestPending: false,
+    ingestTicker: null,
     nodes: {
       router: { ...INITIAL_NODE_STATE },
       market_agent: { ...INITIAL_NODE_STATE },

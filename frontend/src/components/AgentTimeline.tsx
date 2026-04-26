@@ -7,13 +7,27 @@ interface Props {
 }
 
 export function AgentTimeline({ research }: Props) {
-  const { visibleNodes, nodes, phase, ticker, startedAt, completedAt } =
-    research;
+  const {
+    visibleNodes,
+    nodes,
+    phase,
+    ticker,
+    startedAt,
+    completedAt,
+    ingestPending,
+    ingestTicker,
+  } = research;
   const elapsed = useElapsed(startedAt, completedAt);
+
+  // When ingest is pending, only show nodes that actually ran (not "queued" ones).
+  // Queued nodes were never started — showing them with action messages is misleading.
+  const displayNodes = ingestPending
+    ? visibleNodes.filter((n) => nodes[n].status !== "queued")
+    : visibleNodes;
 
   return (
     <div style={styles.log}>
-      {visibleNodes.map((node) => (
+      {displayNodes.map((node) => (
         <LogLine
           key={node}
           node={node}
@@ -24,7 +38,11 @@ export function AgentTimeline({ research }: Props) {
         />
       ))}
 
-      {phase === "done" && elapsed > 0 && (
+      {ingestPending && ingestTicker && (
+        <IngestPollingLine ticker={ingestTicker} />
+      )}
+
+      {phase === "done" && !ingestPending && elapsed > 0 && (
         <div style={styles.completeLine}>
           <span style={{ ...styles.icon, color: "#10b981" }}>✓</span>
           <span style={styles.completeText}>
@@ -48,10 +66,10 @@ interface LineProps {
 
 function LogLine({ node, status, data, tokens, ticker }: LineProps) {
   const isRunning = status === "running";
-  const isDone    = status === "done";
+  const isDone = status === "done";
 
   // Strip trailing ellipsis — ThinkingDots replaces it when running
-  const raw     = activityMessage(node, status, ticker, data);
+  const raw = activityMessage(node, status, ticker, data);
   const message = isRunning ? raw.replace(/…$/, "") : raw;
 
   return (
@@ -69,7 +87,8 @@ function LogLine({ node, status, data, tokens, ticker }: LineProps) {
           style={{
             ...styles.lineText,
             color: isDone ? "#9ca3af" : "#111827",
-            animation: isRunning && !tokens ? "pulse 2s ease-in-out infinite" : "none",
+            animation:
+              isRunning && !tokens ? "pulse 2s ease-in-out infinite" : "none",
           }}
         >
           {message}
@@ -89,16 +108,16 @@ function LogLine({ node, status, data, tokens, ticker }: LineProps) {
 
 // ── Pulsing dot (icon for running state) ──────────────────────────────────
 
-function PulsingDot() {
+function PulsingDot({ color = "#f59e0b" }: { color?: string }) {
   return (
     <span
       style={{
-        display:      "inline-block",
-        width:        "8px",
-        height:       "8px",
+        display: "inline-block",
+        width: "8px",
+        height: "8px",
         borderRadius: "50%",
-        background:   "#f59e0b",
-        animation:    "pulseScale 1.2s ease-in-out infinite",
+        background: color,
+        animation: "pulseScale 1.2s ease-in-out infinite",
       }}
     />
   );
@@ -114,7 +133,9 @@ function ThinkingDots() {
   }, []);
   const dots = ["", ".", "..", "..."][frame];
   return (
-    <span style={{ color: "#9ca3af", letterSpacing: "0.05em", marginLeft: "1px" }}>
+    <span
+      style={{ color: "#9ca3af", letterSpacing: "0.05em", marginLeft: "1px" }}
+    >
       {dots}
     </span>
   );
@@ -179,8 +200,35 @@ function activityMessage(
         ? `News sentiment scored for ${t}`
         : `Analyzing recent news for ${t}…`;
     case "synthesizer":
-      return status === "done" ? "Report ready" : "Synthesizing your report…";
+      return status === "done" ? "Report ready" : "Drafting your report…";
   }
+}
+
+// ── Ingest pending notice ──────────────────────────────────────────────────
+
+function IngestPollingLine({ ticker }: { ticker: string }) {
+  const [dots, setDots] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setDots((d) => (d + 1) % 4), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const dotStr = ".".repeat(dots);
+
+  return (
+    <div style={styles.ingestNotice}>
+      <div style={styles.ingestHeader}>
+        <PulsingDot color="#6366f1" />
+        <span style={styles.ingestTitle}>
+          Indexing {ticker.toUpperCase()} SEC filings{dotStr}
+        </span>
+      </div>
+      <p style={styles.ingestBody}>
+        {ticker.toUpperCase()} filings haven't been indexed yet. Indexing is
+        running in the background — your full analysis will start automatically
+        once it's ready (typically 1–3 minutes).
+      </p>
+    </div>
+  );
 }
 
 // ── Styles ─────────────────────────────────────────────────────────────────
@@ -238,5 +286,29 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "13px",
     color: "#6b7280",
     fontWeight: 500,
+  },
+  ingestNotice: {
+    marginTop: "8px",
+    padding: "12px 14px",
+    borderRadius: "8px",
+    background: "#eef2ff",
+    border: "1px solid #c7d2fe",
+  },
+  ingestHeader: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    marginBottom: "6px",
+  },
+  ingestTitle: {
+    fontSize: "13px",
+    fontWeight: 600,
+    color: "#4338ca",
+  },
+  ingestBody: {
+    margin: 0,
+    fontSize: "13px",
+    color: "#4b5563",
+    lineHeight: 1.55,
   },
 };

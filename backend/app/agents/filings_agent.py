@@ -19,8 +19,7 @@ from langsmith import traceable
 import anthropic
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.tools.retrieval import retrieve_chunks, ticker_has_data
-from app.rag.background_ingest import is_ingesting, trigger_ingest
+from app.tools.retrieval import retrieve_chunks
 from langsmith.wrappers import wrap_anthropic
 
 from ..state import AgentState
@@ -97,10 +96,11 @@ def build_context(chunks: list[dict]) -> str:
 # ---------------------------------------------------------------------------
 @traceable(name="filings-agent")
 async def answer_filing_question(
-    question: str,
-    db: AsyncSession,
-    ticker: str | None = None,
-    k: int = 5,
+    question:     str,
+    db:           AsyncSession,
+    ticker:       str | None = None,
+    k:            int = 5,
+    filing_types: list[str] | None = None,
 ) -> FilingsAnswer:
     """
     Retrieve relevant chunks and generate a grounded answer.
@@ -123,31 +123,10 @@ async def answer_filing_question(
         db=db,
         ticker=ticker,
         k=k,
+        filing_types=filing_types,
     )
 
     if not chunks:
-        if ticker:
-            has_data = await ticker_has_data(ticker, db)
-            if not has_data:
-                if is_ingesting(ticker):
-                    answer = (
-                        f"I'm still fetching SEC filings for **{ticker.upper()}**. "
-                        f"This usually takes 30–60 seconds. Please ask again shortly."
-                    )
-                else:
-                    trigger_ingest(ticker)
-                    answer = (
-                        f"I don't have SEC filings for **{ticker.upper()}** yet. "
-                        f"I've started fetching them in the background — "
-                        f"please ask again in about 60 seconds."
-                    )
-                return FilingsAnswer(
-                    question=question,
-                    answer=answer,
-                    ticker=ticker,
-                    sources=[],
-                    model=MODEL,
-                )
         return FilingsAnswer(
             question=question,
             answer="I could not find relevant information in the SEC filings for this question.",
@@ -205,18 +184,17 @@ If the context is insufficient, say so explicitly."""
 def make_filings_node(db: AsyncSession):
     """Factory that returns a filings_node with db captured in closure."""
     async def filings_node(state: AgentState) -> dict:
+        route = state.get("route", "")
+        filing_types = ["10-Q", "8-K"] if route == "filings_recent" else None
         result = await answer_filing_question(
             question=state["question"],
             db=db,
             ticker=state.get("ticker"),
             k=RETRIEVAL_K,
-        )
-        is_ingest_response = not result.sources and state.get("ticker") and (
-            "fetching" in result.answer.lower() or "ask again" in result.answer.lower()
+            filing_types=filing_types,
         )
         return {
             "filings_output": result.answer,
             "citations":      result.sources,
-            "skip_cache":     True if is_ingest_response else None,
         }
     return filings_node

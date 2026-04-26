@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
 
-import anthropic
+import openai
 from dotenv import load_dotenv
-from langsmith.wrappers import wrap_anthropic
+from langsmith.wrappers import wrap_openai
 
-from ..state import AgentState 
+from ..state import AgentState
 
 from app.models import (
     AnalysisResponse,
@@ -24,125 +25,118 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-client = wrap_anthropic(anthropic.Anthropic())
+client = wrap_openai(openai.OpenAI())
 
-MODEL = os.getenv("FINANCIAL_AGENT_MODEL", "claude-opus-4-5")
+MODEL      = os.getenv("FINANCIAL_AGENT_MODEL", "gpt-4o")
 MAX_TOKENS = int(os.getenv("FINANCIAL_AGENT_MAX_TOKENS", "1500"))
 
 
 # ─────────────────────────────────────────────
-# THE TOOL DEFINITION
+# THE TOOL DEFINITION  (OpenAI function-calling format)
 # ─────────────────────────────────────────────
-#
-# This is a JSON Schema that describes the FinancialSnapshot shape.
-# Claude reads this and knows exactly what fields to populate and with what types.
-#
-# Two things that matter most here:
-#   1. "description" on each property — the LLM reads these like instructions
-#   2. "required" array — fields listed here must be present, others are optional
-#
-# You could generate this from FinancialSnapshot.model_json_schema() but
-# we write it explicitly so you see exactly what the LLM is constrained to.
 
 SUBMIT_ANALYSIS_TOOL = {
-    "name": "submit_analysis",
-    "description": (
-        "Submit your completed financial analysis as structured data. "
-        "Call this exactly once after reasoning through the financial data provided. "
-        "Every number you include must appear in the source data — do not invent values."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "ticker": {
-                "type": "string",
-                "description": "Uppercase ticker symbol",
+    "type": "function",
+    "function": {
+        "name": "submit_analysis",
+        "description": (
+            "Submit your completed financial analysis as structured data. "
+            "Call this exactly once after reasoning through the financial data provided. "
+            "Every number you include must appear in the source data — do not invent values."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ticker": {
+                    "type": "string",
+                    "description": "Uppercase ticker symbol",
+                },
+                "company_name": {"type": ["string", "null"]},
+                "sector":       {"type": ["string", "null"]},
+                "current_price": {
+                    "type": ["number", "null"],
+                    "description": "Current stock price in USD",
+                },
+                "market_cap_billions": {
+                    "type": ["number", "null"],
+                    "description": "Market cap in billions USD, rounded to 2 decimal places",
+                },
+                "revenue_growth_yoy": {
+                    "type": ["number", "null"],
+                    "description": "YoY revenue growth as decimal. 0.12 = 12% growth.",
+                },
+                "gross_margin": {
+                    "type": ["number", "null"],
+                    "description": "Gross margin as decimal, e.g. 0.43",
+                },
+                "net_margin": {
+                    "type": ["number", "null"],
+                    "description": "Net profit margin as decimal",
+                },
+                "pe_ratio": {
+                    "type": ["number", "null"],
+                    "description": "Trailing P/E. Set null if earnings are negative.",
+                },
+                "forward_pe":    {"type": ["number", "null"]},
+                "ev_to_ebitda":  {"type": ["number", "null"]},
+                "debt_to_equity": {
+                    "type": ["number", "null"],
+                    "description": "Debt/equity ratio. Above 2.0 is elevated for most sectors.",
+                },
+                "current_ratio": {
+                    "type": ["number", "null"],
+                    "description": "Current ratio. Below 1.0 suggests liquidity pressure.",
+                },
+                "signal": {
+                    "type": "string",
+                    "enum": [
+                        "STRONG_BUY", "BUY", "HOLD",
+                        "SELL", "STRONG_SELL", "INSUFFICIENT_DATA",
+                    ],
+                    "description": (
+                        "Overall analyst signal. Must follow from the fundamentals, "
+                        "not from brand recognition or general reputation."
+                    ),
+                },
+                "key_strengths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "2-4 strengths grounded in specific numbers from the data. "
+                        "Example: 'Gross margin of 72% is exceptional for enterprise software'"
+                    ),
+                },
+                "key_risks": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "2-4 risks grounded in specific numbers from the data. "
+                        "Example: 'Debt/equity of 1.8x leaves limited room for further leverage'"
+                    ),
+                },
+                "analysis_summary": {
+                    "type": "string",
+                    "description": (
+                        "2-3 sentence analyst summary. Lead with the single most important insight. "
+                        "Cite specific numbers. Never write vague phrases like 'solid fundamentals'."
+                    ),
+                },
+                "data_quality_warning": {
+                    "type": ["string", "null"],
+                    "description": (
+                        "If critical metrics were missing, note it here so the caller "
+                        "knows to discount the analysis. Null if data was complete."
+                    ),
+                },
             },
-            "company_name": {"type": ["string", "null"]},
-            "sector": {"type": ["string", "null"]},
-            "current_price": {
-                "type": ["number", "null"],
-                "description": "Current stock price in USD",
-            },
-            "market_cap_billions": {
-                "type": ["number", "null"],
-                "description": "Market cap in billions USD, rounded to 2 decimal places",
-            },
-            "revenue_growth_yoy": {
-                "type": ["number", "null"],
-                "description": "YoY revenue growth as decimal. 0.12 = 12% growth.",
-            },
-            "gross_margin": {
-                "type": ["number", "null"],
-                "description": "Gross margin as decimal, e.g. 0.43",
-            },
-            "net_margin": {
-                "type": ["number", "null"],
-                "description": "Net profit margin as decimal",
-            },
-            "pe_ratio": {
-                "type": ["number", "null"],
-                "description": "Trailing P/E. Set null if earnings are negative.",
-            },
-            "forward_pe": {"type": ["number", "null"]},
-            "ev_to_ebitda": {"type": ["number", "null"]},
-            "debt_to_equity": {
-                "type": ["number", "null"],
-                "description": "Debt/equity ratio. Above 2.0 is elevated for most sectors.",
-            },
-            "current_ratio": {
-                "type": ["number", "null"],
-                "description": "Current ratio. Below 1.0 suggests liquidity pressure.",
-            },
-            "signal": {
-                "type": "string",
-                "enum": [
-                    "STRONG_BUY", "BUY", "HOLD",
-                    "SELL", "STRONG_SELL", "INSUFFICIENT_DATA",
-                ],
-                "description": (
-                    "Overall analyst signal. Must follow from the fundamentals, "
-                    "not from brand recognition or general reputation."
-                ),
-            },
-            "key_strengths": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "2-4 strengths grounded in specific numbers from the data. "
-                    "Example: 'Gross margin of 72% is exceptional for enterprise software'"
-                ),
-            },
-            "key_risks": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "2-4 risks grounded in specific numbers from the data. "
-                    "Example: 'Debt/equity of 1.8x leaves limited room for further leverage'"
-                ),
-            },
-            "analysis_summary": {
-                "type": "string",
-                "description": (
-                    "2-3 sentence analyst summary. Lead with the single most important insight. "
-                    "Cite specific numbers. Never write vague phrases like 'solid fundamentals'."
-                ),
-            },
-            "data_quality_warning": {
-                "type": ["string", "null"],
-                "description": (
-                    "If critical metrics were missing, note it here so the caller "
-                    "knows to discount the analysis. Null if data was complete."
-                ),
-            },
+            "required": [
+                "ticker",
+                "signal",
+                "analysis_summary",
+                "key_strengths",
+                "key_risks",
+            ],
         },
-        "required": [
-            "ticker",
-            "signal",
-            "analysis_summary",
-            "key_strengths",
-            "key_risks",
-        ],
     },
 }
 
@@ -164,20 +158,8 @@ Rules:
 - Call submit_analysis exactly once. Put your reasoning inside the structured fields, not before the call.\
 """
 
+
 def _format_for_prompt(raw: RawFinancialData) -> str:
-    """
-    Convert RawFinancialData into a clean text block for the LLM.
-
-    WHY NOT JUST PASS raw.model_dump_json()?
-    Two reasons:
-      1. Raw JSON contains field names like 'revenue_ttm' and values like
-         3200000000 — the LLM has to do unnecessary parsing work.
-      2. We can add computed annotations inline ("$3.20B") and highlight
-         data warnings clearly, which improves analysis quality.
-
-    We also convert market_cap to billions here — this is the ONLY place
-    that conversion happens. The LLM sees "3200.00B", not 3200000000000.
-    """
     def pct(v: float | None) -> str:
         return f"{v * 100:.1f}%" if v is not None else "N/A"
 
@@ -235,32 +217,15 @@ def _format_for_prompt(raw: RawFinancialData) -> str:
 
 
 # ─────────────────────────────────────────────
-# HELPER: parse Claude's tool call → FinancialSnapshot
+# HELPER: parse OpenAI tool call → FinancialSnapshot
 # ─────────────────────────────────────────────
 
-def _parse_tool_call(
-    response: anthropic.types.Message,
-    raw: RawFinancialData,
-) -> FinancialSnapshot:
-    """
-    Extract submit_analysis input from Claude's response and build FinancialSnapshot.
+def _parse_tool_call(response, raw: RawFinancialData) -> FinancialSnapshot:
+    tool_calls = (response.choices[0].message.tool_calls or []) if response.choices else []
+    for tc in tool_calls:
+        if tc.function.name == "submit_analysis":
+            data = json.loads(tc.function.arguments)
 
-    WHY WE ITERATE response.content:
-    Claude's response can contain multiple blocks — a text block (thinking out loud)
-    followed by a tool_use block. We find the tool_use block by name rather than
-    assuming it's at a fixed position.
-
-    The block.input is already a Python dict (Anthropic SDK deserializes it).
-    We pass it directly to FinancialSnapshot() — Pydantic validates it.
-    If Claude returns a wrong type or missing required field, ValidationError
-    is raised here, caught by the caller, and returned as an error response.
-    """
-    for block in response.content:
-        if block.type == "tool_use" and block.name == "submit_analysis":
-            data = block.input
-
-            # Convert market cap to billions if the LLM didn't do it
-            # (fallback: compute from raw data if LLM omitted the field)
             market_cap_b = data.get("market_cap_billions")
             if market_cap_b is None and raw.market_cap is not None:
                 market_cap_b = round(raw.market_cap / 1e9, 2)
@@ -287,11 +252,9 @@ def _parse_tool_call(
                 source=raw.source,
             )
 
-    # If we get here, Claude didn't call the tool — shouldn't happen with
-    # tool_choice="any" but we handle it defensively
     raise RuntimeError(
-        f"Claude did not call submit_analysis. "
-        f"Response block types: {[b.type for b in response.content]}"
+        f"Model did not call submit_analysis. "
+        f"Tool calls: {[tc.function.name for tc in tool_calls]}"
     )
 
 
@@ -300,35 +263,15 @@ def _parse_tool_call(
 # ─────────────────────────────────────────────
 
 def analyze_ticker(ticker: str, include_raw: bool = False) -> AnalysisResponse:
-    """
-    Full pipeline: ticker → fetch → LLM → FinancialSnapshot.
-
-    This is the agent. Right now it's a function. In Phase 2 LangGraph
-    will manage state and orchestrate multiple agents, but each agent
-    node will call something that looks exactly like this internally.
-
-    Args:
-        ticker:      Stock ticker symbol (case-insensitive)
-        include_raw: If True, attach RawFinancialData to the response
-
-    Returns:
-        AnalysisResponse — always. Never raises. Errors go in .error field.
-    """
-    start = time.perf_counter()
+    start  = time.perf_counter()
     ticker = ticker.upper().strip()
 
     # ── Step A: Fetch raw data ──────────────────────────────────────────
     try:
         raw = fetch_financial_data(ticker)
         logger.info(f"[{ticker}] raw data fetched — {len(raw.fetch_errors)} warnings")
-
     except ValueError as e:
-        # Invalid ticker — no point calling the LLM
-        return AnalysisResponse(
-            success=False,
-            error=str(e),
-            duration_ms=_elapsed(start),
-        )
+        return AnalysisResponse(success=False, error=str(e), duration_ms=_elapsed(start))
     except Exception as e:
         logger.exception(f"[{ticker}] unexpected fetch error")
         return AnalysisResponse(
@@ -344,42 +287,35 @@ def analyze_ticker(ticker: str, include_raw: bool = False) -> AnalysisResponse:
         f"{_format_for_prompt(raw)}"
     )
 
-    # ── Step C: Call Claude ─────────────────────────────────────────────
+    # ── Step C: Call OpenAI ─────────────────────────────────────────────
     try:
-        response = client.messages.create(
+        response = client.chat.completions.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
-            system=SYSTEM_PROMPT,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user",   "content": user_message},
+            ],
             tools=[SUBMIT_ANALYSIS_TOOL],
-            # "any" = must call a tool (the only tool is submit_analysis)
-            # This is what forces structured output instead of a text reply
-            tool_choice={"type": "any"},
-            messages=[{"role": "user", "content": user_message}],
+            tool_choice={"type": "function", "function": {"name": "submit_analysis"}},
         )
         logger.info(
             f"[{ticker}] LLM done — "
-            f"stop_reason={response.stop_reason} "
-            f"in={response.usage.input_tokens}tok "
-            f"out={response.usage.output_tokens}tok"
+            f"finish_reason={response.choices[0].finish_reason} "
+            f"in={response.usage.prompt_tokens}tok "
+            f"out={response.usage.completion_tokens}tok"
         )
-
-    except anthropic.APIConnectionError as e:
+    except openai.APIConnectionError as e:
         return AnalysisResponse(
-            success=False,
-            error=f"Could not reach Anthropic API: {e}",
-            duration_ms=_elapsed(start),
+            success=False, error=f"Could not reach OpenAI API: {e}", duration_ms=_elapsed(start),
         )
-    except anthropic.RateLimitError:
+    except openai.RateLimitError:
         return AnalysisResponse(
-            success=False,
-            error="Anthropic rate limit hit — wait a moment and retry",
-            duration_ms=_elapsed(start),
+            success=False, error="OpenAI rate limit hit — wait a moment and retry", duration_ms=_elapsed(start),
         )
-    except anthropic.APIStatusError as e:
+    except openai.APIStatusError as e:
         return AnalysisResponse(
-            success=False,
-            error=f"Anthropic API error {e.status_code}: {e.message}",
-            duration_ms=_elapsed(start),
+            success=False, error=f"OpenAI API error {e.status_code}: {e.message}", duration_ms=_elapsed(start),
         )
 
     # ── Step D: Parse tool call → FinancialSnapshot ─────────────────────
@@ -411,27 +347,16 @@ def _elapsed(start: float) -> float:
 def make_market_node():
     async def market_node(state: AgentState) -> dict:
         ticker = state.get("ticker")
-        
+
         if not ticker:
-            return {
-                "market_output": "No ticker specified — cannot fetch market data.",
-            }
-        
-        loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            None,
-            analyze_ticker,
-            ticker,
-            False,
-        )
-        
-        # Handle case where analyze_ticker itself failed
+            return {"market_output": "No ticker specified — cannot fetch market data."}
+
+        loop   = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, analyze_ticker, ticker, False)
+
         if not result.success:
-            return {
-                "market_output": f"Market data fetch failed: {result.error}",
-            }
-        
-        return {
-            "market_output": result.model_dump_json(indent=2),
-        }
+            return {"market_output": f"Market data fetch failed: {result.error}"}
+
+        return {"market_output": result.model_dump_json(indent=2)}
+
     return market_node
