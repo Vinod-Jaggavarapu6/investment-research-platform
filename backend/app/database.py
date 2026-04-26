@@ -111,6 +111,23 @@ async def create_tables():
         """))
 
 
+async def reset_embedding_column(dim: int) -> None:
+    """
+    Drop and recreate the embedding column at the given dimension.
+    Call this from build_index.py when switching embedding models.
+    Safe to call even if the column doesn't exist yet.
+    """
+    async with engine.begin() as conn:
+        await conn.execute(text("DROP INDEX IF EXISTS chunks_embedding_hnsw"))
+        await conn.execute(text("ALTER TABLE chunks DROP COLUMN IF EXISTS embedding"))
+        await conn.execute(text(f"ALTER TABLE chunks ADD COLUMN embedding vector({dim})"))
+        await conn.execute(text(f"""
+            CREATE INDEX IF NOT EXISTS chunks_embedding_hnsw
+            ON chunks USING hnsw (embedding vector_cosine_ops)
+            WITH (m = 16, ef_construction = 64)
+        """))
+
+
 def get_checkpointer_url() -> str:
     """
     Convert SQLAlchemy asyncpg URL → plain psycopg URL for LangGraph checkpointer.

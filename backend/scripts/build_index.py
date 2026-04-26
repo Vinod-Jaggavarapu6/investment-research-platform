@@ -23,7 +23,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.database import AsyncSessionLocal, Chunk, create_tables
+from app.database import AsyncSessionLocal, Chunk, create_tables, reset_embedding_column
 from app.rag.ingest import ingest_filing, ingest_recent_filings
 from app.rag.chunker import chunk_filing, ChunkRecord
 from app.rag.embedder import embed_chunks, get_client, EMBEDDING_DIM
@@ -135,6 +135,7 @@ async def main() -> None:
     logger.info("=" * 60)
 
     await create_tables()
+    await reset_embedding_column(EMBEDDING_DIM)
     openai_client = get_client()
 
     # Always clear the embed cache at the start of a full rebuild.

@@ -369,11 +369,17 @@ def ingest_filing(
 # ---------------------------------------------------------------------------
 
 # Most valuable 10-Q sections — quarterly update to the annual 10-K narrative
+# 10-Q item numbers differ from 10-K, but we store them under the same
+# structural names as 10-K so section names are consistent across filing types.
+# 10-Q Item 1  (Financial Statements)  → "Item 8"
+# 10-Q Item 2  (MD&A)                  → "Item 7"
+# 10-Q Item 3  (Market Risk)           → "Item 7A"
+# 10-Q Item 1A (Risk Factors)          → "Item 1A"
 SECTION_PATTERNS_10Q: dict[str, str] = {
-    "Financial Statements": r"Item\s+1\.\s+Financial\s+Statements",
-    "MD&A":                 r"Item\s+2\.\s+Management",
-    "Market Risk":          r"Item\s+3\.\s+Quantitative",
-    "Risk Factors":         r"Item\s+1A\.\s+Risk\s+Factors",
+    "Item 8":  r"Item\s+1\.\s+Financial\s+Statements",
+    "Item 7":  r"Item\s+2\.\s+Management",
+    "Item 7A": r"Item\s+3\.\s+Quantitative",
+    "Item 1A": r"Item\s+1A\.\s+Risk\s+Factors",
 }
 
 # 8-K event items — material events companies are required to disclose

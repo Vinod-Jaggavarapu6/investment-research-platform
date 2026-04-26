@@ -44,6 +44,16 @@ HISTORY_PATH   = Path("data/eval_history.jsonl")
 K_VALUES       = [1, 3, 5]
 RETRIEVE_K     = 10   # fetch more than we evaluate so MRR is meaningful
 
+# The DB has two naming conventions for the same sections because 10-K uses
+# structural names ("Item 1A") while 10-Q used human-readable names ("Risk
+# Factors") before the ingest normalization fix.  Both are correct answers.
+SECTION_ALIASES: dict[str, set[str]] = {
+    "Item 1A": {"Item 1A", "Risk Factors"},
+    "Item 7":  {"Item 7", "MD&A", "Results of Operations"},
+    "Item 7A": {"Item 7A", "Market Risk"},
+    "Item 8":  {"Item 8", "Financial Statements"},
+}
+
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -80,7 +90,8 @@ class EvalResult:
         for k in K_VALUES:
             top_k = self.retrieved[:k]
             self.hit_at[k]       = any(self._is_hit(c) for c in top_k)
-            self.section_prec[k] = self._prec(top_k, lambda c: c["section"] == self.gold_section)
+            valid_sections = SECTION_ALIASES.get(self.gold_section, {self.gold_section})
+            self.section_prec[k] = self._prec(top_k, lambda c, vs=valid_sections: c["section"] in vs)
             if self.gold_ticker:
                 self.ticker_prec[k] = self._prec(top_k, lambda c: c["ticker"] == self.gold_ticker)
 
@@ -90,7 +101,8 @@ class EvalResult:
                 break
 
     def _is_hit(self, chunk: dict) -> bool:
-        section_ok = chunk["section"] == self.gold_section
+        valid_sections = SECTION_ALIASES.get(self.gold_section, {self.gold_section})
+        section_ok = chunk["section"] in valid_sections
         if self.gold_ticker is None:
             return section_ok
         return section_ok and chunk["ticker"] == self.gold_ticker

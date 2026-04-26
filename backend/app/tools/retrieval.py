@@ -9,6 +9,7 @@ Flow:
 Ticker filtering is a native WHERE clause — no overfetch or post-filtering needed.
 """
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -18,6 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import Chunk
 from app.rag.embedder import get_client, EMBEDDING_MODEL
+from app.rag.reranker import rerank
+
+# How many candidates to pull from pgvector before reranking.
+# Must be >= any k value passed to retrieve_chunks.
+RERANK_CANDIDATES = 20
 
 logger = logging.getLogger(__name__)
 
@@ -50,15 +56,19 @@ async def retrieve_chunks(
     Returns:
         List of dicts with text, ticker, year, section, score (0–1).
     """
+    from app.rag.embedder import EMBEDDING_DIM
     client = _get_openai_client()
-    response = client.embeddings.create(model=EMBEDDING_MODEL, input=query)
+    response = client.embeddings.create(model=EMBEDDING_MODEL, input=query, dimensions=EMBEDDING_DIM)
     query_vector = response.data[0].embedding  # list[float], already unit-length
+
+    # Fetch more candidates than needed so the reranker has room to reorder.
+    fetch_k = max(RERANK_CANDIDATES, k)
 
     distance_expr = Chunk.embedding.cosine_distance(query_vector)
     stmt = (
         select(Chunk, distance_expr.label("distance"))
         .order_by(distance_expr)
-        .limit(k)
+        .limit(fetch_k)
     )
     if ticker:
         stmt = stmt.where(Chunk.ticker == ticker.upper())
@@ -72,7 +82,7 @@ async def retrieve_chunks(
         logger.warning("pgvector returned no results for query=%r ticker=%r", query, ticker)
         return []
 
-    return [
+    candidates = [
         {
             "text":         row.Chunk.text,
             "ticker":       row.Chunk.ticker,
@@ -83,6 +93,19 @@ async def retrieve_chunks(
         }
         for row in rows
     ]
+
+    # Cross-encoder reranking: reads (query, chunk) jointly — much better at
+    # distinguishing sections (Item 1A vs Item 7) than cosine similarity alone.
+    # Runs in a thread pool to avoid blocking the async event loop.
+    reranked = await asyncio.to_thread(rerank, query, candidates, k)
+
+    logger.info(
+        "[retrieval] query=%r ticker=%r candidates=%d → reranked to k=%d  "
+        "top_score=%.3f",
+        query[:60], ticker, len(candidates), k,
+        reranked[0]["rerank_score"] if reranked else 0,
+    )
+    return reranked
 
 
 async def ticker_has_data(ticker: str, db: AsyncSession) -> bool:

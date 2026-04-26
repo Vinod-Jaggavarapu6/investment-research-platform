@@ -26,8 +26,8 @@ load_dotenv()
 # Config
 # ---------------------------------------------------------------------------
 
-EMBEDDING_MODEL = "text-embedding-3-small"
-EMBEDDING_DIM   = 1536       # dimensions produced by text-embedding-3-small
+EMBEDDING_MODEL = "text-embedding-3-large"
+EMBEDDING_DIM   = 1536       # projected via Matryoshka — fits pgvector HNSW 2000-dim limit
 MAX_RETRIES  = 6
 RETRY_DELAY  = 60    # seconds — OpenAI rate limits reset every 60 seconds
 BATCH_SIZE   = 50    # reduce from 100 to 50 — smaller batches = less likely to hit TPM limit
@@ -75,6 +75,7 @@ def embed_texts(texts: list[str], client: OpenAI) -> np.ndarray:
                 response = client.embeddings.create(
                     model=EMBEDDING_MODEL,
                     input=batch,
+                    dimensions=EMBEDDING_DIM,
                 )
                 batch_vectors = [item.embedding for item in response.data]
                 all_vectors.extend(batch_vectors)
