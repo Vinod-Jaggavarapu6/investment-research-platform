@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { ResearchState, NodeName, NodeStatus, Citation } from "../types";
 
 interface Props {
@@ -103,7 +104,9 @@ function LogLine({ node, status, data, tokens, ticker }: LineProps) {
 
       {node === "synthesizer" && tokens && (
         <div style={styles.reportArea}>
-          <Markdown>{tokens}</Markdown>
+          <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+            {tokens}
+          </Markdown>
           {isRunning && <span style={styles.cursor}>▋</span>}
         </div>
       )}
@@ -261,6 +264,51 @@ function CitationsBlock({ citations }: { citations: Citation[] }) {
     </div>
   );
 }
+
+// ── Markdown table renderers ───────────────────────────────────────────────
+
+const markdownComponents = {
+  table: ({ children }: { children?: React.ReactNode }) => (
+    <div style={{ overflowX: "auto", margin: "12px 0" }}>
+      <table style={{
+        borderCollapse: "collapse",
+        width: "100%",
+        fontSize: "13px",
+        lineHeight: "1.5",
+      }}>
+        {children}
+      </table>
+    </div>
+  ),
+  thead: ({ children }: { children?: React.ReactNode }) => (
+    <thead style={{ background: "#f3f4f6" }}>{children}</thead>
+  ),
+  th: ({ children }: { children?: React.ReactNode }) => (
+    <th style={{
+      padding: "8px 12px",
+      border: "1px solid #e5e7eb",
+      fontWeight: 600,
+      textAlign: "left",
+      color: "#111827",
+      whiteSpace: "nowrap",
+    }}>
+      {children}
+    </th>
+  ),
+  td: ({ children }: { children?: React.ReactNode }) => (
+    <td style={{
+      padding: "7px 12px",
+      border: "1px solid #e5e7eb",
+      color: "#374151",
+      verticalAlign: "top",
+    }}>
+      {children}
+    </td>
+  ),
+  tr: ({ children }: { children?: React.ReactNode }) => (
+    <tr style={{ borderBottom: "1px solid #e5e7eb" }}>{children}</tr>
+  ),
+};
 
 // ── Styles ─────────────────────────────────────────────────────────────────
 
