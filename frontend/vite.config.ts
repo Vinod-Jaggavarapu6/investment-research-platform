@@ -11,6 +11,7 @@ export default defineConfig({
       // and Vite forwards it to localhost:8000
       "/research": "http://localhost:8000",
       "/news": "http://localhost:8000",
+      "/ingest": "http://localhost:8000",
     },
   },
 });

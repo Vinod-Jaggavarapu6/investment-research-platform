@@ -3,12 +3,9 @@ news_agent.py — Extract structured sentiment from news articles
 
 Flow:
   1. Fetch last N days of news via Finnhub
-  2. Score each article with Claude (structured tool call)
+  2. Score each article with OpenAI (structured tool call)
   3. Aggregate scores weighted by source quality
   4. Return NewsSentiment with top catalysts
-
-Same tool-forcing pattern as financial_agent.py —
-Claude must call submit_sentiment, no free-text allowed.
 """
 
 import json
@@ -17,8 +14,8 @@ import os
 import time
 from datetime import datetime
 
-import anthropic
-from langsmith.wrappers import wrap_anthropic
+import openai
+from langsmith.wrappers import wrap_openai
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.models import (
@@ -34,76 +31,79 @@ from ..state import AgentState
 
 logger = logging.getLogger(__name__)
 
-client = wrap_anthropic(anthropic.Anthropic())
-MODEL           = os.getenv("NEWS_AGENT_MODEL", "claude-opus-4-5")
+client         = wrap_openai(openai.OpenAI())
+MODEL          = os.getenv("NEWS_AGENT_MODEL", "gpt-4o-mini")
 NEWS_MAX_TOKENS = int(os.getenv("NEWS_AGENT_MAX_TOKENS", "2000"))
 NEWS_DAYS       = int(os.getenv("NEWS_DAYS_LOOKBACK", "7"))
 
 # ---------------------------------------------------------------------------
-# Tool definition — forces structured per-article scoring
+# Tool definition — forces structured per-article scoring (OpenAI format)
 # ---------------------------------------------------------------------------
 
 SCORE_ARTICLES_TOOL = {
-    "name": "submit_sentiment",
-    "description": (
-        "Submit structured sentiment analysis for a batch of news articles. "
-        "Score every article provided. Do not skip any. "
-        "Base scores strictly on article content — not on general company reputation."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "articles": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "index": {
-                            "type": "integer",
-                            "description": "Article index from the input list (0-based)",
+    "type": "function",
+    "function": {
+        "name": "submit_sentiment",
+        "description": (
+            "Submit structured sentiment analysis for a batch of news articles. "
+            "Score every article provided. Do not skip any. "
+            "Base scores strictly on article content — not on general company reputation."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "articles": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "index": {
+                                "type": "integer",
+                                "description": "Article index from the input list (0-based)",
+                            },
+                            "sentiment": {
+                                "type": "string",
+                                "enum": ["POSITIVE", "NEGATIVE", "NEUTRAL", "MIXED"],
+                            },
+                            "score": {
+                                "type": "number",
+                                "description": (
+                                    "Sentiment score from -1.0 (very negative) "
+                                    "to +1.0 (very positive). 0.0 = neutral."
+                                ),
+                            },
+                            "justification": {
+                                "type": "string",
+                                "description": (
+                                    "One sentence grounded in the article content. "
+                                    "Example: 'Earnings beat of 12% and raised guidance "
+                                    "are direct positive price catalysts.'"
+                                ),
+                            },
                         },
-                        "sentiment": {
-                            "type": "string",
-                            "enum": ["POSITIVE", "NEGATIVE", "NEUTRAL", "MIXED"],
-                        },
-                        "score": {
-                            "type": "number",
-                            "description": (
-                                "Sentiment score from -1.0 (very negative) "
-                                "to +1.0 (very positive). 0.0 = neutral."
-                            ),
-                        },
-                        "justification": {
-                            "type": "string",
-                            "description": (
-                                "One sentence grounded in the article content. "
-                                "Example: 'Earnings beat of 12% and raised guidance "
-                                "are direct positive price catalysts.'"
-                            ),
-                        },
+                        "required": ["index", "sentiment", "score", "justification"],
                     },
-                    "required": ["index", "sentiment", "score", "justification"],
+                },
+                "bull_catalysts": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "2-4 key positive themes across all articles. Specific, not vague.",
+                },
+                "bear_catalysts": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "2-4 key negative themes across all articles. Specific, not vague.",
+                },
+                "summary": {
+                    "type": "string",
+                    "description": (
+                        "2-3 sentence synthesis of overall news sentiment. "
+                        "Lead with the dominant theme. Cite specific events."
+                    ),
                 },
             },
-            "bull_catalysts": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "2-4 key positive themes across all articles. Specific, not vague.",
-            },
-            "bear_catalysts": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "2-4 key negative themes across all articles. Specific, not vague.",
-            },
-            "summary": {
-                "type": "string",
-                "description": (
-                    "2-3 sentence synthesis of overall news sentiment. "
-                    "Lead with the dominant theme. Cite specific events."
-                ),
-            },
+            "required": ["articles", "bull_catalysts", "bear_catalysts", "summary"],
         },
-        "required": ["articles", "bull_catalysts", "bear_catalysts", "summary"],
     },
 }
 
@@ -126,7 +126,6 @@ MAX_ARTICLES_PER_BATCH = int(os.getenv("NEWS_BATCH_SIZE", "15"))
 
 
 def _format_articles_for_prompt(articles: list[NewsArticle]) -> str:
-    """Format articles into a numbered list for Claude."""
     parts = []
     for i, article in enumerate(articles):
         parts.append(
@@ -139,45 +138,41 @@ def _format_articles_for_prompt(articles: list[NewsArticle]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Score a batch of articles with Claude
+# Score a batch of articles with OpenAI
 # ---------------------------------------------------------------------------
 
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=2, max=10),
-    retry=retry_if_exception_type(anthropic.APIConnectionError),
+    retry=retry_if_exception_type(openai.APIConnectionError),
 )
 def _score_batch(
     ticker: str,
     articles: list[NewsArticle],
 ) -> tuple[list[dict], list[str], list[str], str]:
-    """
-    Score a batch of articles with Claude.
-
-    Returns:
-        (scored_articles, bull_catalysts, bear_catalysts, summary)
-    """
     formatted = _format_articles_for_prompt(articles)
 
-    response = client.messages.create(
+    response = client.chat.completions.create(
         model=MODEL,
-        max_tokens=NEWS_MAX_TOKENS,
-        system=SYSTEM_PROMPT,
+        max_completion_tokens=NEWS_MAX_TOKENS,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"Score the sentiment of these {len(articles)} news articles "
+                    f"about {ticker}:\n\n{formatted}"
+                ),
+            },
+        ],
         tools=[SCORE_ARTICLES_TOOL],
-        tool_choice={"type": "any"},
-        messages=[{
-            "role": "user",
-            "content": (
-                f"Score the sentiment of these {len(articles)} news articles "
-                f"about {ticker}:\n\n{formatted}"
-            ),
-        }],
+        tool_choice={"type": "function", "function": {"name": "submit_sentiment"}},
     )
 
-    # Extract tool call
-    for block in response.content:
-        if block.type == "tool_use" and block.name == "submit_sentiment":
-            data = block.input
+    tool_calls = (response.choices[0].message.tool_calls or []) if response.choices else []
+    for tc in tool_calls:
+        if tc.function.name == "submit_sentiment":
+            data = json.loads(tc.function.arguments)
             return (
                 data.get("articles", []),
                 data.get("bull_catalysts", []),
@@ -186,8 +181,8 @@ def _score_batch(
             )
 
     raise RuntimeError(
-        f"Claude did not call submit_sentiment. "
-        f"Blocks: {[b.type for b in response.content]}"
+        f"Model did not call submit_sentiment. "
+        f"Tool calls: {[tc.function.name for tc in tool_calls]}"
     )
 
 
@@ -211,7 +206,6 @@ def _aggregate(
     ticker: str,
     days: int,
 ) -> NewsSentiment:
-    """Compute weighted average score across all scored articles."""
     scored = [a for a in articles if a.score is not None]
 
     if not scored:
@@ -226,10 +220,9 @@ def _aggregate(
             data_warning  = "No articles were successfully scored.",
         )
 
-    # Weighted average: score × source_weight
-    total_weight    = sum(a.source_weight for a in scored)
-    weighted_sum    = sum(a.score * a.source_weight for a in scored)  # type: ignore
-    overall_score   = round(weighted_sum / total_weight, 4)
+    total_weight  = sum(a.source_weight for a in scored)
+    weighted_sum  = sum(a.score * a.source_weight for a in scored)  # type: ignore
+    overall_score = round(weighted_sum / total_weight, 4)
 
     return NewsSentiment(
         ticker        = ticker,
@@ -253,19 +246,6 @@ def analyze_news_sentiment(
     ticker: str,
     days: int = 7,
 ) -> NewsResponse:
-    """
-    Full pipeline: ticker → fetch news → score → aggregate → NewsSentiment.
-
-    Same pattern as analyze_ticker() in financial_agent.py.
-    Synchronous — wrap with run_in_executor for async contexts.
-
-    Args:
-        ticker: Stock ticker symbol
-        days:   Number of days of news to analyze
-
-    Returns:
-        NewsResponse — always. Never raises. Errors go in .error field.
-    """
     start  = time.perf_counter()
     ticker = ticker.upper().strip()
 
@@ -311,7 +291,6 @@ def analyze_news_sentiment(
             logger.error(f"[{ticker}] batch scoring failed: {e}")
             continue
 
-        # Apply scores back to article objects
         for scored in scored_dicts:
             idx = scored.get("index", -1)
             if 0 <= idx < len(batch):
@@ -321,7 +300,6 @@ def analyze_news_sentiment(
                     article.score         = float(scored["score"])
                     article.justification = scored.get("justification")
                 except ValueError:
-                    # Claude returned an unexpected sentiment value — map to NEUTRAL
                     logger.warning(
                         f"Unexpected sentiment value: {scored.get('sentiment')!r} "
                         f"— defaulting to NEUTRAL"
@@ -333,16 +311,16 @@ def analyze_news_sentiment(
         all_bull.extend(bull)
         all_bear.extend(bear)
         if summary:
-            final_summary = summary     # last batch summary wins for single batch
+            final_summary = summary
 
     # ── Step C: Aggregate ───────────────────────────────────────────────
     sentiment = _aggregate(
-        articles      = articles,
-        all_bull      = all_bull,
-        all_bear      = all_bear,
-        summary       = final_summary,
-        ticker        = ticker,
-        days          = days,
+        articles  = articles,
+        all_bull  = all_bull,
+        all_bear  = all_bear,
+        summary   = final_summary,
+        ticker    = ticker,
+        days      = days,
     )
 
     logger.info(
@@ -363,7 +341,6 @@ def analyze_news_sentiment(
 # ---------------------------------------------------------------------------
 
 def make_news_node():
-    """Factory that returns a news_node with run_in_executor pattern."""
     import asyncio
 
     async def news_node(state: AgentState) -> dict:
@@ -373,18 +350,11 @@ def make_news_node():
             return {"news_output": "No ticker specified — cannot fetch news sentiment."}
 
         loop   = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            None,
-            analyze_news_sentiment,
-            ticker,
-            NEWS_DAYS,
-        )
+        result = await loop.run_in_executor(None, analyze_news_sentiment, ticker, NEWS_DAYS)
 
         if not result.success:
             return {"news_output": f"News sentiment fetch failed: {result.error}"}
 
-        return {
-            "news_output": result.sentiment.model_dump_json(indent=2),
-        }
+        return {"news_output": result.sentiment.model_dump_json(indent=2)}
 
     return news_node

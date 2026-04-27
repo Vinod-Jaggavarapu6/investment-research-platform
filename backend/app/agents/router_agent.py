@@ -8,76 +8,59 @@ client = wrap_openai(AsyncOpenAI())
 MODEL = os.getenv("ROUTER_AGENT_MODEL", "gpt-4o-mini")
 
 ROUTER_SYSTEM = """You are a question classifier for a financial research platform.
-Analyze the user's question and return a JSON object with two fields:
+Analyze the user's question and return a JSON object.
 
-1. "route": one of five categories:
-   - "market"        → requires live price, volume, ratios, or current financial metrics
-   - "filings"       → requires information from SEC filings (10-K, 10-Q, earnings, guidance)
-   - "news"          → requires recent news sentiment, headlines, or market buzz
-   - "both"          → requires BOTH live market data AND SEC filing context
-   - "comprehensive" → requires market data, SEC filings, AND recent news sentiment
+ROUTES — pick exactly one:
+  "market"          → live price, volume, ratios, or current financial metrics for ONE company
+  "filings"         → SEC annual (10-K) disclosures for ONE company
+  "filings_recent"  → recent quarters (10-Q) or events (8-K) for ONE company
+  "news"            → recent headlines/sentiment for ONE company
+  "both"            → live market data AND SEC filings for ONE company
+  "comprehensive"   → market data, SEC filings, AND news for ONE company
+  "compare"         → comparing TWO OR MORE companies against each other
 
-2. "ticker": the stock ticker symbol mentioned in the question (e.g. "AAPL", "MSFT").
-   Return null if no specific ticker is mentioned.
+TICKER FIELDS:
+  For single-company routes: return "ticker" (string) and "tickers" (null)
+  For "compare" route:       return "tickers" (array of strings) and "ticker" (null)
 
-CRITICAL DISTINCTION — route by WHERE the answer comes from, not what words appear:
-
-  MARKET — answer comes from live market data feed:
-    "What is X's current price?"          → market
-    "What is X's P/E ratio?"              → market
-    "What is X's gross margin?"           → market
-    "What is X's revenue growth?"         → market
-    "What is X's EV/EBITDA?"              → market
-    "What is X's market cap?"             → market
-    "What is X's dividend yield?"         → market
-    "What is X's debt to equity?"         → market
-
-  FILINGS — answer comes from SEC documents:
-    "What did X disclose about revenue?"  → filings
-    "What did X say about margins?"       → filings
-    "What risk factors did X disclose?"   → filings
-    "What did X guide for?"               → filings
-    "What were X's stated priorities?"    → filings
-
-  NEWS — answer comes from recent news and sentiment:
-    "What is the news sentiment around X?"          → news
-    "What are analysts saying about X this week?"   → news
-    "Is there positive momentum around X?"          → news
-    "What are the recent headlines for X?"          → news
-    "What catalysts are driving X's price?"         → news
-
-  BOTH — requires live market data AND SEC filing context:
-    "Is X's valuation justified given their 10-K guidance?"  → both
-    "How does X's current P/E compare to their guidance?"    → both
-    "Does X's price reflect risks they disclosed?"           → both
-
-  COMPREHENSIVE — requires market data, SEC filings, AND recent news:
-    "Give me a full picture of X"                            → comprehensive
-    "Full analysis of X — valuation, filings, and sentiment" → comprehensive
-    "What should I know about X before investing?"           → comprehensive
-    "Complete research on X"                                 → comprehensive
-
-The key signal for FILINGS is verbs like "disclose", "say", "state", "guide", "report".
-The key signal for NEWS is words like "sentiment", "momentum", "headlines", "analysts saying", "buzz", "catalysts".
-A plain "What is X's [metric]?" is always MARKET regardless of what the metric is.
-
-Respond with ONLY valid JSON. No preamble, no explanation, no markdown code fences.
+CRITICAL — use "compare" when the question explicitly asks to:
+  - compare, contrast, rank, or pit companies against each other
+  - find which company is better/stronger/larger at something
+  - compare side-by-side across a dimension
 
 Examples:
-  {"route": "market",        "ticker": "AAPL"}
-  {"route": "filings",       "ticker": "MSFT"}
-  {"route": "both",          "ticker": "NVDA"}
-  {"route": "news",          "ticker": "TSLA"}
-  {"route": "comprehensive", "ticker": "AAPL"}
-  {"route": "filings",       "ticker": null}
+  "Compare AAPL vs MSFT on risk factors"           → {"route": "compare", "ticker": null, "tickers": ["AAPL", "MSFT"]}
+  "Which is better, NVDA or AMD for AI?"           → {"route": "compare", "ticker": null, "tickers": ["NVDA", "AMD"]}
+  "GOOGL vs META vs AMZN cloud strategy"           → {"route": "compare", "ticker": null, "tickers": ["GOOGL", "META", "AMZN"]}
+  "Compare JPM and BAC margins"                    → {"route": "compare", "ticker": null, "tickers": ["JPM", "BAC"]}
+  "What is AAPL's current price?"                  → {"route": "market",  "ticker": "AAPL", "tickers": null}
+  "What did MSFT disclose about revenue?"          → {"route": "filings", "ticker": "MSFT", "tickers": null}
+  "What happened last quarter at NVDA?"            → {"route": "filings_recent", "ticker": "NVDA", "tickers": null}
+  "News sentiment around TSLA?"                    → {"route": "news",    "ticker": "TSLA", "tickers": null}
+  "Is NVDA valuation justified vs guidance?"       → {"route": "both",    "ticker": "NVDA", "tickers": null}
+  "Full picture of AAPL"                           → {"route": "comprehensive", "ticker": "AAPL", "tickers": null}
+  "Which semiconductor company has better margins?"→ {"route": "filings", "ticker": null,   "tickers": null}
+
+ROUTE SIGNALS:
+  MARKET:          "What is X's price/P/E/margin/revenue/market cap?" — plain metric lookup
+  FILINGS:         verbs like disclose, say, state, guide, report (annual)
+  FILINGS_RECENT:  "last quarter", "recent earnings", "Q1/Q2/Q3/Q4", "latest", "8-K"
+  NEWS:            sentiment, momentum, headlines, analysts saying, catalysts
+  BOTH:            valuation vs guidance, price vs disclosed risks
+  COMPREHENSIVE:   "full picture", "full analysis", "what should I know before investing"
+  COMPARE:         vs, versus, compare, contrast, better, stronger, side-by-side + 2+ companies
+
+Respond with ONLY valid JSON. No preamble, no explanation, no markdown code fences.
 """
+
+VALID_ROUTES = {"market", "filings", "filings_recent", "both", "news", "comprehensive", "compare"}
 
 
 async def router_node(state: AgentState) -> dict:
-    """Classify the question and extract ticker. Sets route and ticker in state."""
+    """Classify the question and extract ticker(s). Sets route, ticker, tickers in state."""
     response = await client.chat.completions.create(
         model=MODEL,
-        max_tokens=50,
+        max_completion_tokens=100,
         messages=[
             {"role": "system", "content": ROUTER_SYSTEM},
             {"role": "user", "content": state["question"]},
@@ -88,26 +71,38 @@ async def router_node(state: AgentState) -> dict:
     print(f"[ROUTER DEBUG] raw LLM output: {raw!r}", flush=True)
 
     if raw.startswith("```"):
-      raw = raw.split("```")[1]          # get content between first pair of fences
-      if raw.startswith("json"):
-          raw = raw[4:]                  # strip the "json" language tag
-      raw = raw.strip()
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.strip()
 
     try:
-        parsed = json.loads(raw)
-        route  = parsed.get("route", "both")
-        ticker = parsed.get("ticker")
+        parsed  = json.loads(raw)
+        route   = parsed.get("route", "both")
+        ticker  = parsed.get("ticker")
+        tickers = parsed.get("tickers")
 
-        if route not in ("market", "filings", "both", "news", "comprehensive"):
+        if route not in VALID_ROUTES:
             route = "both"
 
-    except json.JSONDecodeError:
-        route  = "both"
-        ticker = None
+        # Normalise: compare must have a tickers list
+        if route == "compare":
+            if not isinstance(tickers, list) or len(tickers) < 2:
+                route = "filings"   # fall back gracefully
+                tickers = None
+            else:
+                tickers = [t.upper() for t in tickers]
+                ticker  = None
 
-    print(f"[ROUTER DEBUG] returning route={route!r} ticker={ticker!r}", flush=True)
+    except json.JSONDecodeError:
+        route   = "both"
+        ticker  = None
+        tickers = None
+
+    print(f"[ROUTER DEBUG] returning route={route!r} ticker={ticker!r} tickers={tickers!r}", flush=True)
 
     return {
-        "route":  route,
-        "ticker": ticker,
+        "route":   route,
+        "ticker":  ticker,
+        "tickers": tickers,
     }

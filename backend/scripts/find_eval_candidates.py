@@ -19,7 +19,7 @@ from sqlalchemy import select
 async def main():
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(Chunk).order_by(Chunk.ticker, Chunk.section, Chunk.faiss_index)
+            select(Chunk).order_by(Chunk.ticker, Chunk.section, Chunk.id)
         )
         chunks = result.scalars().all()
 
@@ -39,7 +39,7 @@ async def main():
         for chunk in top:
             output_lines.append(
                 f"\n{'='*60}\n"
-                f"FAISS_IDX: {chunk.faiss_index} | "
+                f"CHUNK_ID: {chunk.id} | "
                 f"{ticker} {chunk.year} | {section}\n"
                 f"LENGTH: {len(chunk.text)} chars\n"
                 f"{'='*60}\n"

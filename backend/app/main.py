@@ -25,7 +25,8 @@ from app.models import (
     ResearchRequest, ResearchResponse,
 )
 from app.streaming import research_stream
-from app.tools.retrieval import init_retrieval, retrieve_chunks, format_retrieval_response
+from app.tools.retrieval import retrieve_chunks, format_retrieval_response, ticker_has_data
+from app.rag.background_ingest import is_ingesting, trigger_ingest
 from app.cache.redis_client import ResearchCacheClient, RedisConfig
 logging.basicConfig(
     level=logging.INFO,
@@ -50,7 +51,6 @@ async def lifespan(app: FastAPI):
     logger.info(f"OPENAI_API_KEY set:    {bool(os.getenv('OPENAI_API_KEY'))}")
 
     await create_tables()
-    init_retrieval()
 
     # RedisConfig reads REDIS_HOST, REDIS_PORT automatically from environment
     # because of env_prefix = "REDIS_" in its BaseSettings config.
@@ -417,6 +417,35 @@ async def cache_debug_delete(
     ok  = await _cache.delete(key)
     logger.info("cache EVICT key=%r ok=%s", key, ok)
     return {"key": key, "deleted": ok}
+
+
+@app.get("/ingest/status/{ticker}", tags=["Ingest"], summary="Check ingest status for a ticker")
+async def ingest_status(
+    ticker: str = Path(..., description="Stock ticker, e.g. SNOW"),
+    db: AsyncSession = Depends(get_db),
+):
+    t = ticker.upper().strip()
+    has_data = await ticker_has_data(t, db)
+    if has_data:
+        return {"ticker": t, "status": "ready"}
+    if is_ingesting(t):
+        return {"ticker": t, "status": "ingesting"}
+    return {"ticker": t, "status": "not_found"}
+
+
+@app.post("/ingest/trigger/{ticker}", tags=["Ingest"], summary="Manually trigger ingest for a ticker")
+async def ingest_trigger(
+    ticker: str = Path(..., description="Stock ticker, e.g. SNOW"),
+    db: AsyncSession = Depends(get_db),
+):
+    t = ticker.upper().strip()
+    if is_ingesting(t):
+        return {"ticker": t, "status": "already_ingesting"}
+    has_data = await ticker_has_data(t, db)
+    if has_data:
+        return {"ticker": t, "status": "already_ready"}
+    trigger_ingest(t)
+    return {"ticker": t, "status": "ingesting_started"}
 
 
 @app.get("/cache/health", tags=["Cache"], summary="Redis ping")

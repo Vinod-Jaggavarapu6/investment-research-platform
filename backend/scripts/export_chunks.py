@@ -19,7 +19,7 @@ async def main():
 
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(Chunk).order_by(Chunk.ticker, Chunk.faiss_index)
+            select(Chunk).order_by(Chunk.ticker, Chunk.id)
         )
         chunks = result.scalars().all()
 
@@ -27,7 +27,7 @@ async def main():
     for chunk in chunks:
         lines.append(
             f"{'='*60}\n"
-            f"ID: {chunk.id} | FAISS: {chunk.faiss_index} | "
+            f"ID: {chunk.id} | "
             f"{chunk.ticker} {chunk.year} | {chunk.section}\n"
             f"{'='*60}\n"
             f"{chunk.text}\n"

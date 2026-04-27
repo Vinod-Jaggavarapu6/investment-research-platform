@@ -40,10 +40,12 @@ async def main():
 
             # Fetch retrieved chunks so you can read them
             retrieved_indices = miss["retrieved"]
+            # NOTE: retrieved_indices are now chunk.id values (not faiss positions).
+            # Regenerate eval_set.json with build_index.py after migration.
             result = await session.execute(
-                select(Chunk).where(Chunk.faiss_index.in_(retrieved_indices))
+                select(Chunk).where(Chunk.id.in_(retrieved_indices))
             )
-            chunks = {c.faiss_index: c for c in result.scalars().all()}
+            chunks = {c.id: c for c in result.scalars().all()}
 
             for rank, (idx, score) in enumerate(
                 zip(retrieved_indices, miss["scores"]), start=1

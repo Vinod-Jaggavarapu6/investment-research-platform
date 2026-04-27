@@ -25,6 +25,7 @@ class ChunkRecord:
     ticker:      str    # e.g. "AAPL"
     year:        int    # e.g. 2024
     section:     str    # e.g. "Item 7"
+    filing_type: str    # "10-K", "10-Q", or "8-K"
     chunk_index: int    # position within this filing (0, 1, 2, ...)
 
 
@@ -45,8 +46,8 @@ class ChunkRecord:
 # tiktoken-based splitter later, update these numbers directly to
 # token counts (800 and 100).
 
-CHUNK_SIZE    = 3200   # characters (~800 tokens)
-CHUNK_OVERLAP =  400   # characters (~100 tokens)
+CHUNK_SIZE    = 1600   # characters (~400 tokens) — tighter focus per chunk
+CHUNK_OVERLAP =  200   # characters (~50 tokens)
 
 # Separator priority — RecursiveCharacterTextSplitter tries these in order:
 #   \n\n  paragraph break   (most preferred — keeps paragraphs together)
@@ -54,6 +55,21 @@ CHUNK_OVERLAP =  400   # characters (~100 tokens)
 #   .     sentence boundary
 #   " "   word boundary     (last resort)
 SEPARATORS = ["\n\n", "\n", ".", " "]
+
+# Prepended to every chunk so the embedding carries section identity.
+# Shorter chunks lose the "where am I?" signal without this prefix.
+SECTION_LABELS: dict[str, str] = {
+    "Item 1":  "Business Description",
+    "Item 1A": "Risk Factors",
+    "Item 7":  "Management Discussion and Analysis",
+    "Item 7A": "Quantitative Market Risk",
+    "Item 8":  "Financial Statements",
+}
+
+
+def _section_prefix(section: "FilingSection") -> str:
+    label = SECTION_LABELS.get(section.section, section.section)
+    return f"[{section.ticker} {section.year} {section.filing_type} — {section.section}: {label}]\n\n"
 
 
 def make_splitter() -> RecursiveCharacterTextSplitter:
@@ -84,6 +100,7 @@ def chunk_section(
     is what faiss_index in Postgres stores.
     """
     raw_chunks = splitter.split_text(section.text)
+    prefix = _section_prefix(section)
 
     records = []
     for i, text in enumerate(raw_chunks):
@@ -94,10 +111,11 @@ def chunk_section(
             continue
 
         records.append(ChunkRecord(
-            text=text.strip(),
+            text=prefix + text.strip(),   # prefix after split — doesn't skew chunk boundaries
             ticker=section.ticker,
             year=section.year,
             section=section.section,
+            filing_type=section.filing_type,
             chunk_index=start_index + len(records),
         ))
 

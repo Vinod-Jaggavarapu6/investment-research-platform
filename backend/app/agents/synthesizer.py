@@ -1,15 +1,13 @@
 import asyncio
 import os
 
-from langsmith.wrappers import wrap_openai
-from openai import AsyncOpenAI
+import anthropic
+from langsmith.wrappers import wrap_anthropic
 from typing import Callable, Awaitable
 from ..state import AgentState
 
-client = wrap_openai(AsyncOpenAI())
-
-MODEL      = os.getenv("SYNTHESIZER_MODEL", "gpt-4o-mini")
-MAX_TOKENS = int(os.getenv("SYNTHESIZER_MAX_TOKENS", "1024"))
+MODEL      = os.getenv("SYNTHESIZER_MODEL", "claude-sonnet-4-6")
+MAX_TOKENS = int(os.getenv("SYNTHESIZER_MAX_TOKENS", "2048"))
 
 SYNTH_SYSTEM = """You are a senior investment analyst synthesizing research from multiple sources:
 1. Live market data (prices, ratios, recent performance)
@@ -41,12 +39,13 @@ def make_synthesizer_node(
 
         combined = "\n\n".join(parts)
 
-        stream = await client.chat.completions.create(
+        client = wrap_anthropic(anthropic.AsyncAnthropic())
+        chunks: list[str] = []
+        async with client.messages.stream(
             model=MODEL,
             max_tokens=MAX_TOKENS,
-            stream=True,
+            system=SYNTH_SYSTEM,
             messages=[
-                {"role": "system", "content": SYNTH_SYSTEM},
                 {
                     "role": "user",
                     "content": (
@@ -56,16 +55,11 @@ def make_synthesizer_node(
                     ),
                 },
             ],
-        )
-
-        chunks: list[str] = []
-        async for chunk in stream:
-            delta = chunk.choices[0].delta.content
-            if delta:
-                chunks.append(delta)
+        ) as stream:
+            async for text in stream.text_stream:
+                chunks.append(text)
                 if on_token is not None:
-                    # Call immediately — no queue, no batching
-                    await on_token(delta)
+                    await on_token(text)
 
         return {"final_answer": "".join(chunks)}
 
