@@ -2,7 +2,8 @@
 
 An AI-powered investment research platform that combines multi-agent orchestration, RAG over SEC filings (10-K, 10-Q, 8-K), real-time market data, and news sentiment to produce grounded research reports — with live token streaming to the browser.
 
-[Watch Demo](docs/demo.mp4)
+![Demo](docs/demo.gif)
+
 
 ---
 
