@@ -12,6 +12,7 @@ export const ROUTE_NODES: Record<string, NodeName[]> = {
     "news_agent",
     "synthesizer",
   ],
+  compare: ["router", "compare_agent"],
 };
 
 // Before route is known, show only router as running
@@ -23,7 +24,8 @@ export type NodeName =
   | "market_agent"
   | "filings_agent"
   | "news_agent"
-  | "synthesizer";
+  | "synthesizer"
+  | "compare_agent";
 
 // Per-node status in the UI
 export type NodeStatus = "queued" | "running" | "done" | "error";
@@ -76,6 +78,7 @@ export const NODE_LABELS: Record<NodeName, string> = {
   filings_agent: "SEC Filings",
   news_agent: "News Sentiment",
   synthesizer: "Synthesizer",
+  compare_agent: "Comparison",
 };
 
 // Loading messages shown while each node is running
@@ -101,6 +104,11 @@ export const NODE_LOADING_MESSAGES: Record<NodeName, string[]> = {
     "Weighing source quality…",
   ],
   synthesizer: ["Synthesizing research…", "Drafting your report…"],
+  compare_agent: [
+    "Retrieving filings for each company…",
+    "Running parallel searches…",
+    "Comparing side-by-side…",
+  ],
 };
 
 // Ordered list for timeline rendering — defines display order
@@ -110,6 +118,7 @@ export const NODE_ORDER: NodeName[] = [
   "filings_agent",
   "news_agent",
   "synthesizer",
+  "compare_agent",
 ];
 
 export const INITIAL_NODE_STATE: AgentState = {
@@ -137,6 +146,7 @@ export function makeInitialResearchState(): ResearchState {
       filings_agent: { ...INITIAL_NODE_STATE },
       news_agent: { ...INITIAL_NODE_STATE },
       synthesizer: { ...INITIAL_NODE_STATE },
+      compare_agent: { ...INITIAL_NODE_STATE },
     },
   };
 }

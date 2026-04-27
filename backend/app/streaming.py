@@ -147,7 +147,7 @@ logger = logging.getLogger(__name__)
 # Nodes forwarded to the frontend as SSE node_start / node_complete events.
 # data_preflight is intentionally excluded — it's an internal gate, not a
 # user-visible step. We capture its output separately via PREFLIGHT_NODE.
-TRACKED_NODES = {"router", "cache_check", "market_agent", "filings_agent", "news_agent", "synthesizer"}
+TRACKED_NODES = {"router", "cache_check", "market_agent", "filings_agent", "news_agent", "synthesizer", "compare_agent"}
 PREFLIGHT_NODE = "data_preflight"
 
 
@@ -170,10 +170,19 @@ def _extract_node_output(node: str, output: Any) -> dict:
     if not isinstance(output, dict):
         return {"status": "complete"}
     if node == "router":
-        return {"route": output.get("route"), "ticker": output.get("ticker")}
+        return {
+            "route":   output.get("route"),
+            "ticker":  output.get("ticker"),
+            "tickers": output.get("tickers"),
+        }
     elif node == "filings_agent":
         return {
             "has_data":      output.get("filings_output") is not None,
+            "has_citations": bool(output.get("citations")),
+        }
+    elif node == "compare_agent":
+        return {
+            "tickers":       output.get("tickers"),
             "has_citations": bool(output.get("citations")),
         }
     return {"status": "complete"}
@@ -262,7 +271,7 @@ async def research_stream(
                                     node, derived_ticker, node_summary)
                         await sse_queue.put(node_complete_event(node, node_summary))
 
-                        if node == "synthesizer" and isinstance(output, dict):
+                        if node in ("synthesizer", "compare_agent") and isinstance(output, dict):
                             final_answer = output.get("final_answer")
 
                         if node == "router" and isinstance(output, dict):
@@ -273,7 +282,7 @@ async def research_stream(
                             logger.info("[stream] router  route=%r ticker=%r",
                                         captured_route, derived_ticker)
 
-                        if node == "filings_agent" and isinstance(output, dict):
+                        if node in ("filings_agent", "compare_agent") and isinstance(output, dict):
                             captured_citations = output.get("citations") or []
 
         except asyncio.CancelledError:
@@ -327,7 +336,7 @@ async def research_stream(
             final_answer = "".join(assembled_answer)
 
         cache_key      = full_report_key(derived_ticker, question) if derived_ticker else ""
-        synthesizer_ran = "synthesizer" in nodes_completed
+        synthesizer_ran = "synthesizer" in nodes_completed or "compare_agent" in nodes_completed
 
         logger.info(
             "[stream] complete  ticker=%r route=%r ingest_pending=%s "

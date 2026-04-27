@@ -13,6 +13,7 @@ export function AgentTimeline({ research }: Props) {
     nodes,
     phase,
     ticker,
+    finalReport,
     startedAt,
     completedAt,
     ingestPending,
@@ -26,6 +27,11 @@ export function AgentTimeline({ research }: Props) {
   const displayNodes = ingestPending
     ? visibleNodes.filter((n) => nodes[n].status !== "queued")
     : visibleNodes;
+
+  // For routes that bypass the synthesizer (e.g. compare), finalReport arrives via
+  // the done event but synthesizer.tokens is empty — render it here directly.
+  const synthTokens = nodes.synthesizer?.tokens ?? "";
+  const showFinalReport = phase === "done" && !ingestPending && finalReport && !synthTokens;
 
   return (
     <div style={styles.log}>
@@ -42,6 +48,14 @@ export function AgentTimeline({ research }: Props) {
 
       {ingestPending && ingestTicker && (
         <IngestPollingLine ticker={ingestTicker} />
+      )}
+
+      {showFinalReport && (
+        <div style={styles.reportArea}>
+          <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+            {finalReport}
+          </Markdown>
+        </div>
       )}
 
       {phase === "done" && !ingestPending && citations.length > 0 && (
@@ -186,9 +200,11 @@ function activityMessage(
       const routeLabels: Record<string, string> = {
         market: "market analysis",
         filings: "SEC filing research",
+        filings_recent: "recent filings",
         news: "news sentiment",
         both: "market + SEC filings",
         comprehensive: "comprehensive research",
+        compare: "company comparison",
       };
       const route = data?.route as string | undefined;
       return ticker
@@ -209,6 +225,12 @@ function activityMessage(
         : `Analyzing recent news for ${t}…`;
     case "synthesizer":
       return status === "done" ? "Report ready" : "Drafting your report…";
+    case "compare_agent": {
+      const tickers = (data?.tickers as string[] | undefined)?.join(" vs ");
+      return status === "done"
+        ? `Comparison ready${tickers ? ` · ${tickers}` : ""}`
+        : "Comparing companies side-by-side…";
+    }
   }
 }
 
