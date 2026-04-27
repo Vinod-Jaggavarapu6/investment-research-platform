@@ -4,6 +4,7 @@ An AI-powered investment research platform that combines multi-agent orchestrati
 
 ![Demo](docs/demo.gif)
 
+
 ---
 
 ## Architecture
