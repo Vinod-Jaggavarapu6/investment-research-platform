@@ -12,6 +12,7 @@ export default defineConfig({
       "/research": "http://localhost:8000",
       "/news": "http://localhost:8000",
       "/ingest": "http://localhost:8000",
+      "/conversations": "http://localhost:8000",
     },
   },
 });

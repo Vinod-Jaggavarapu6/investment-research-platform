@@ -206,6 +206,27 @@ class ResearchResponse(BaseModel):
     final_answer: str
     citations: list[dict]
 
+
+class ConversationResponse(BaseModel):
+    id: str
+    session_id: str
+    title: str
+    ticker: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class MessageResponse(BaseModel):
+    id: str
+    conversation_id: str
+    role: str
+    content: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
 class SentimentSignal(str, Enum):
     VERY_BULLISH  = "VERY_BULLISH"
     BULLISH       = "BULLISH"

@@ -58,12 +58,24 @@ VALID_ROUTES = {"market", "filings", "filings_recent", "both", "news", "comprehe
 
 async def router_node(state: AgentState) -> dict:
     """Classify the question and extract ticker(s). Sets route, ticker, tickers in state."""
+    # Capture previous turn's ticker BEFORE we reset state — used as follow-up context
+    prev_ticker = (state.get("ticker") or "").upper() or None
+
+    # When the question is a follow-up (no ticker mentioned), tell the LLM what
+    # company the conversation has been about so it can route correctly.
+    user_content = state["question"]
+    if prev_ticker:
+        user_content = (
+            f"[Conversation context: the previous question in this conversation "
+            f"was about {prev_ticker}]\n\n{state['question']}"
+        )
+
     response = await client.chat.completions.create(
         model=MODEL,
         max_completion_tokens=100,
         messages=[
             {"role": "system", "content": ROUTER_SYSTEM},
-            {"role": "user", "content": state["question"]},
+            {"role": "user", "content": user_content},
         ],
     )
 
@@ -94,6 +106,13 @@ async def router_node(state: AgentState) -> dict:
                 tickers = [t.upper() for t in tickers]
                 ticker  = None
 
+        # Follow-up fallback: apply AFTER normalisation so we see the final route.
+        # "compare" in the question text (e.g. "how does that compare...") can
+        # briefly set route="compare" before normalisation downgrades it to "filings".
+        # Guard: only fire when no ticker AND no tickers list were resolved.
+        if not ticker and not tickers and prev_ticker:
+            ticker = prev_ticker
+
     except json.JSONDecodeError:
         route   = "both"
         ticker  = None
@@ -102,7 +121,14 @@ async def router_node(state: AgentState) -> dict:
     print(f"[ROUTER DEBUG] returning route={route!r} ticker={ticker!r} tickers={tickers!r}", flush=True)
 
     return {
-        "route":   route,
-        "ticker":  ticker,
-        "tickers": tickers,
+        "route":          route,
+        "ticker":         ticker,
+        "tickers":        tickers,
+        # Clear previous turn's outputs so agents always run fresh
+        "final_answer":   None,
+        "market_output":  None,
+        "filings_output": None,
+        "news_output":    None,
+        "citations":      None,
+        "ingest_pending": None,
     }

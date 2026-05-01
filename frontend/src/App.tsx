@@ -1,93 +1,148 @@
+import { useState, useEffect, useCallback } from "react";
 import { useResearchStream } from "./useResearchStream";
-import { SearchBar } from "./components/SearchBar";
-import { AgentTimeline } from "./components/AgentTimeline";
+import { useConversations } from "./useConversations";
+import { ConversationSidebar } from "./components/ConversationSidebar";
+import { ChatWindow } from "./components/ChatWindow";
+import type { Message } from "./types";
 
 export default function App() {
-  const { state, start } = useResearchStream();
+  const { state, start, reset, sessionId } = useResearchStream();
+  const { conversations, refresh, loadMessages, deleteConversation } =
+    useConversations(sessionId);
+
+  const [activeConversationId, setActiveConversationId] = useState<
+    string | null
+  >(null);
+  const [historyMessages, setHistoryMessages] = useState<Message[]>([]);
+  const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
 
   const isStreaming = state?.phase === "streaming";
+
+  // Eager: as soon as conversation_ready fires, pin the active conversation and refresh sidebar
+  useEffect(() => {
+    if (!state?.conversationId) return;
+    setActiveConversationId(state.conversationId);
+    refresh();
+  }, [state?.conversationId, refresh]);
+
+  // Done: reload messages from DB once the full exchange has been persisted
+  useEffect(() => {
+    if (state?.phase !== "done" || !state.conversationId) return;
+    const convId = state.conversationId;
+    loadMessages(convId).then((msgs) => {
+      setHistoryMessages(msgs);
+      setPendingQuestion(null);
+    });
+  }, [state?.phase, state?.conversationId, loadMessages]);
+
+  const handleSelectConversation = useCallback(
+    async (id: string) => {
+      setActiveConversationId(id);
+      setPendingQuestion(null);
+      const msgs = await loadMessages(id);
+      setHistoryMessages(msgs);
+    },
+    [loadMessages],
+  );
+
+  const handleNewConversation = useCallback(() => {
+    reset();
+    setActiveConversationId(null);
+    setHistoryMessages([]);
+    setPendingQuestion(null);
+  }, [reset]);
+
+  const handleDelete = useCallback(
+    async (id: string) => {
+      await deleteConversation(id);
+      if (id === activeConversationId) {
+        reset();
+        setActiveConversationId(null);
+        setHistoryMessages([]);
+        setPendingQuestion(null);
+      }
+    },
+    [deleteConversation, activeConversationId, reset],
+  );
+
+  const handleStart = useCallback(
+    (question: string) => {
+      setPendingQuestion(question);
+      start(question, activeConversationId);
+    },
+    [start, activeConversationId],
+  );
 
   return (
     <div style={styles.page}>
       <header style={styles.header}>
-        <h1 style={styles.title}>Investment Research Agentic Platform</h1>
-        <p style={styles.sub}>
-          Multi-agent analysis · SEC filings · Live market data · News sentiment
-        </p>
+        <h1 style={styles.title}>Investment Research</h1>
+        {/* <p style={styles.sub}>
+          Multi-agent · SEC filings · Live market data · News sentiment
+        </p> */}
       </header>
 
-      <main style={styles.main}>
-        <SearchBar onSubmit={(q) => start(q)} disabled={isStreaming} />
+      <div style={styles.body}>
+        <ConversationSidebar
+          conversations={conversations}
+          activeId={activeConversationId}
+          onSelect={handleSelectConversation}
+          onNew={handleNewConversation}
+          onDelete={handleDelete}
+        />
 
-        {state?.errorMsg && (
-          <div style={styles.error}>Error: {state.errorMsg}</div>
-        )}
-
-        {state && (
-          <div style={styles.results}>
-            <AgentTimeline research={state} />
-          </div>
-        )}
-      </main>
-
-      <footer style={styles.footer}>Developed by Vinod</footer>
+        <div style={styles.content}>
+          <ChatWindow
+            messages={historyMessages}
+            pendingQuestion={pendingQuestion}
+            streamingState={state}
+            onSubmit={handleStart}
+            isStreaming={isStreaming}
+          />
+        </div>
+      </div>
     </div>
   );
 }
 
 const styles: Record<string, React.CSSProperties> = {
   page: {
-    minHeight: "100vh",
+    height: "100vh",
     display: "flex",
     flexDirection: "column",
-    background: "#f9fafb",
     fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
     color: "#111827",
+    background: "#f9fafb",
   },
   header: {
-    padding: "40px 48px 24px",
+    padding: "14px 24px",
     borderBottom: "1px solid #e5e7eb",
     background: "#fff",
+    flexShrink: 0,
+    display: "flex",
+    alignItems: "center",
+    gap: "16px",
   },
   title: {
-    margin: "0 0 4px",
-    fontSize: "22px",
+    margin: 0,
+    fontSize: "17px",
     fontWeight: "700",
+    letterSpacing: "-0.01em",
   },
   sub: {
     margin: 0,
-    fontSize: "13px",
-    color: "#6b7280",
-  },
-  main: {
-    maxWidth: "860px",
-    width: "100%",
-    margin: "0 auto",
-    padding: "32px 24px",
-    display: "flex",
-    flexDirection: "column",
-    gap: "24px",
-    flex: 1,
-  },
-  results: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "12px",
-  },
-  error: {
-    padding: "12px 16px",
-    borderRadius: "8px",
-    background: "#fef2f2",
-    border: "1px solid #fca5a5",
-    color: "#dc2626",
-    fontSize: "14px",
-  },
-  footer: {
-    textAlign: "center",
-    padding: "20px",
-    fontSize: "13px",
+    fontSize: "12px",
     color: "#9ca3af",
-    borderTop: "1px solid #e5e7eb",
-    background: "#fff",
+  },
+  body: {
+    display: "flex",
+    flex: 1,
+    overflow: "hidden",
+  },
+  content: {
+    flex: 1,
+    overflow: "hidden",
+    display: "flex",
+    flexDirection: "column",
   },
 };

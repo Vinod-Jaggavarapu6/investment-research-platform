@@ -1,12 +1,13 @@
 import asyncio
 import json
 import logging
+import uuid
+from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator, Any
 
 from app.graph import build_graph
 from app.state import AgentState
 from app.cache.cache_keys import full_report_key, CACHE_TTL
-from datetime import timedelta
 
 
 logger = logging.getLogger(__name__)
@@ -29,8 +30,12 @@ def done_event(
     report: Any,
     ingesting_ticker: str | None = None,
     citations: list | None = None,
+    conversation_id: str | None = None,
 ) -> dict:
-    return _event("done", report=report, ingesting_ticker=ingesting_ticker, citations=citations or [])
+    return _event("done", report=report, ingesting_ticker=ingesting_ticker, citations=citations or [], conversation_id=conversation_id)
+
+def conversation_ready_event(conversation_id: str) -> dict:
+    return _event("conversation_ready", conversation_id=conversation_id)
 
 
 def _extract_node_output(node: str, output: Any) -> dict:
@@ -55,17 +60,99 @@ def _extract_node_output(node: str, output: Any) -> dict:
     return {"status": "complete"}
 
 
+async def _persist_exchange(
+    db,
+    conversation_id: str,
+    session_id: str,
+    question: str,
+    answer: str,
+    ticker: str,
+) -> None:
+    from sqlalchemy import select, update as sa_update
+    from .database import Conversation, Message
+
+    now = datetime.now(timezone.utc)
+
+    result = await db.execute(select(Conversation).where(Conversation.id == conversation_id))
+    conv = result.scalar_one_or_none()
+    if conv is None:
+        ticker_clean = ticker.upper() if ticker else None
+        title = f"{ticker_clean} — {question[:60]}" if ticker_clean else question[:60]
+        db.add(Conversation(
+            id=conversation_id,
+            session_id=session_id or "default",
+            title=title,
+            ticker=ticker_clean,
+            created_at=now,
+            updated_at=now,
+        ))
+    else:
+        await db.execute(
+            sa_update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(updated_at=now)
+        )
+
+    db.add(Message(id=str(uuid.uuid4()), conversation_id=conversation_id, role="user",      content=question,  created_at=now))
+    db.add(Message(id=str(uuid.uuid4()), conversation_id=conversation_id, role="assistant", content=answer))
+    await db.commit()
+
+
+async def _load_recent_messages(db, conversation_id: str, n: int = 6) -> list[dict]:
+    """Return the last n messages in chronological order for synthesizer context."""
+    from sqlalchemy import select
+    from .database import Message
+
+    result = await db.execute(
+        select(Message)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.created_at.desc())
+        .limit(n)
+    )
+    msgs = result.scalars().all()
+    return [{"role": m.role, "content": m.content} for m in reversed(msgs)]
+
+
+async def _create_conversation(
+    db,
+    conversation_id: str,
+    session_id: str,
+    question: str,
+    ticker: str,
+) -> None:
+    from sqlalchemy import select
+    from .database import Conversation
+
+    now = datetime.now(timezone.utc)
+    result = await db.execute(select(Conversation).where(Conversation.id == conversation_id))
+    if result.scalar_one_or_none() is None:
+        ticker_clean = ticker.upper() if ticker else None
+        title = f"{ticker_clean} — {question[:60]}" if ticker_clean else question[:60]
+        db.add(Conversation(
+            id=conversation_id,
+            session_id=session_id or "default",
+            title=title,
+            ticker=ticker_clean,
+            created_at=now,
+            updated_at=now,
+        ))
+        await db.commit()
+
+
 async def research_stream(
-    question:     str,
-    ticker:       str,
+    question:        str,
+    ticker:          str,
     db,
     cache=None,
     checkpointer=None,
+    conversation_id: str | None = None,
+    session_id:      str = "default",
 ) -> AsyncGenerator[dict, None]:
 
     derived_ticker: str = ticker.upper() if ticker else ""
-    logger.info("[stream] start  request_ticker=%r derived_ticker=%r question=%r",
-                ticker, derived_ticker, question[:80])
+    conversation_id = conversation_id or str(uuid.uuid4())
+    logger.info("[stream] start  request_ticker=%r derived_ticker=%r question=%r conversation_id=%r",
+                ticker, derived_ticker, question[:80], conversation_id)
 
     token_queue: asyncio.Queue[str | None] = asyncio.Queue()
     assembled_answer: list[str] = []
@@ -76,11 +163,26 @@ async def research_stream(
 
     graph = build_graph(db=db, on_token=on_token, cache=cache, checkpointer=checkpointer)
 
-    initial_state: AgentState = {
-        "question": question,
-        "ticker":   derived_ticker,
-    }
-    thread_id = f"stream-{derived_ticker or 'auto'}-{id(question)}"
+    # Only set ticker when explicitly provided — omitting it lets LangGraph
+    # preserve the checkpoint value from the previous turn, which the router
+    # then reads as prev_ticker for follow-up context.
+    initial_state: AgentState = {"question": question}
+    if derived_ticker:
+        initial_state["ticker"] = derived_ticker
+
+    # Load prior messages so the synthesizer can handle follow-up questions
+    # that reference the previous answer ("elaborate on X", "that figure you mentioned").
+    if db and conversation_id:
+        try:
+            prior = await _load_recent_messages(db, conversation_id)
+            if prior:
+                initial_state["messages"] = prior
+                logger.info("[stream] loaded %d prior messages for conversation_id=%r", len(prior), conversation_id)
+        except Exception:
+            logger.exception("[stream] failed to load prior messages conversation_id=%r", conversation_id)
+    # conversation_id doubles as the LangGraph thread_id so follow-up
+    # questions automatically resume graph state from the prior turn.
+    thread_id = conversation_id
     config    = {"configurable": {"thread_id": thread_id}}
 
     nodes_started:            set[str] = set()
@@ -178,6 +280,13 @@ async def research_stream(
             pass
 
     try:
+        if db:
+            try:
+                await _create_conversation(db, conversation_id, session_id, question, derived_ticker)
+            except Exception:
+                logger.exception("[stream] failed to eagerly create conversation conversation_id=%r", conversation_id)
+        yield conversation_ready_event(conversation_id)
+
         graph_task = asyncio.create_task(run_graph())
         token_task = asyncio.create_task(forward_tokens())
         # Always attach the discard callback so the task result is retrieved
@@ -228,9 +337,24 @@ async def research_stream(
             logger.info("[stream] cache SKIP — ingest pending for %r", derived_ticker)
 
         ingesting_ticker = derived_ticker if captured_ingest_pending else None
+
+        if final_answer and db:
+            try:
+                await _persist_exchange(
+                    db=db,
+                    conversation_id=conversation_id,
+                    session_id=session_id,
+                    question=question,
+                    answer=final_answer,
+                    ticker=derived_ticker,
+                )
+                logger.info("[stream] persisted exchange  conversation_id=%r", conversation_id)
+            except Exception:
+                logger.exception("[stream] failed to persist exchange  conversation_id=%r", conversation_id)
+
         logger.info("[stream] done event  ingesting_ticker=%r citations=%d",
                     ingesting_ticker, len(captured_citations))
-        yield done_event(final_answer, ingesting_ticker=ingesting_ticker, citations=captured_citations)
+        yield done_event(final_answer, ingesting_ticker=ingesting_ticker, citations=captured_citations, conversation_id=conversation_id)
 
     except asyncio.CancelledError:
         logger.info("[stream] cancelled — client disconnected ticker=%r", ticker)

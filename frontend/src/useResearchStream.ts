@@ -6,12 +6,26 @@ import {
   ROUTE_NODES,
 } from "./types";
 
+function getOrCreateSessionId(): string {
+  const key = "irp_session_id";
+  let id = localStorage.getItem(key);
+  if (!id) {
+    id =
+      typeof crypto !== "undefined" && crypto.randomUUID
+        ? crypto.randomUUID()
+        : Math.random().toString(36).slice(2) + Date.now().toString(36);
+    localStorage.setItem(key, id);
+  }
+  return id;
+}
+
 export function useResearchStream() {
   const [state, setState] = useState<ResearchState | null>(null);
+  const [sessionId] = useState<string>(() => getOrCreateSessionId());
   const sourceRef = useRef<EventSource | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Ref so the poll callback always calls the latest `start` without stale closure
-  const startFnRef = useRef<(q: string) => void>(() => {});
+  const startFnRef = useRef<(q: string, cid?: string | null) => void>(() => {});
 
   const stopPolling = useCallback(() => {
     if (pollRef.current !== null) {
@@ -26,12 +40,18 @@ export function useResearchStream() {
     stopPolling();
   }, [stopPolling]);
 
+  const reset = useCallback(() => {
+    close();
+    setState(null);
+  }, [close]);
+
   const start = useCallback(
-    (question: string) => {
+    (question: string, conversationId?: string | null) => {
       close();
       setState(makeInitialResearchState());
 
-      const params = new URLSearchParams({ question });
+      const params = new URLSearchParams({ question, session_id: sessionId });
+      if (conversationId) params.set("conversation_id", conversationId);
       const source = new EventSource(`/research/stream?${params}`);
       sourceRef.current = source;
 
@@ -80,7 +100,7 @@ export function useResearchStream() {
                   setState((prev) =>
                     prev ? { ...prev, ingestPending: false } : prev,
                   );
-                  startFnRef.current(question);
+                  startFnRef.current(question, conversationId);
 
                 } else if (data.status === "ingesting") {
                   // Still running — reset the not-found streak and keep waiting
@@ -130,7 +150,7 @@ export function useResearchStream() {
         sourceRef.current = null;
       };
     },
-    [close, stopPolling],
+    [close, stopPolling, sessionId],
   );
 
   // Keep ref in sync so the poll interval never captures a stale start
@@ -138,7 +158,7 @@ export function useResearchStream() {
     startFnRef.current = start;
   }, [start]);
 
-  return { state, start, stop: close };
+  return { state, start, stop: close, reset, sessionId };
 }
 
 // Pure state reducer — applies one SSE event to ResearchState
@@ -198,6 +218,10 @@ function applyEvent(state: ResearchState, event: SSEEvent): ResearchState {
       };
     }
 
+    case "conversation_ready": {
+      return { ...state, conversationId: event.conversation_id };
+    }
+
     case "done": {
       return {
         ...state,
@@ -205,6 +229,7 @@ function applyEvent(state: ResearchState, event: SSEEvent): ResearchState {
         finalReport: event.report,
         citations: event.citations ?? [],
         completedAt: Date.now(),
+        conversationId: event.conversation_id ?? state.conversationId,
       };
     }
 

@@ -8,7 +8,7 @@ Responsibilities:
   - Create tables on startup
 """
 
-from sqlalchemy import Column, Integer, String, Text, DateTime, text
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.sql import func
@@ -74,6 +74,27 @@ class Chunk(Base):
             f"<Chunk ticker={self.ticker} year={self.year} "
             f"filing_type={self.filing_type} section={self.section}>"
         )
+
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    id         = Column(String(36), primary_key=True)
+    session_id = Column(String(36), nullable=False, index=True)
+    title      = Column(String(200), nullable=False)
+    ticker     = Column(String(10),  nullable=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Message(Base):
+    __tablename__ = "messages"
+
+    id              = Column(String(36), primary_key=True)
+    conversation_id = Column(String(36), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True)
+    role            = Column(String(10),  nullable=False)   # "user" | "assistant"
+    content         = Column(Text,        nullable=False)
+    created_at      = Column(DateTime(timezone=True), server_default=func.now())
 
 
 async def create_tables():

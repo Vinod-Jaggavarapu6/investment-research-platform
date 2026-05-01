@@ -112,6 +112,41 @@ def build_context(chunks: list[dict]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Search query rewriter
+# ---------------------------------------------------------------------------
+
+async def _make_search_query(question: str, ticker: str | None) -> str:
+    """
+    Converts a natural-language (possibly pronoun-heavy) question into a
+    compact retrieval query suitable for embedding search.
+
+    Example:
+      "How does that compare to their gross margin trend?" + ticker=META
+      → "META gross margin trend"
+    """
+    if not ticker:
+        return question
+
+    client = wrap_openai(AsyncOpenAI())
+    response = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        max_completion_tokens=30,
+        messages=[{
+            "role": "user",
+            "content": (
+                f"Convert this financial question into a short search query (5-10 words) "
+                f"for SEC filing retrieval.\n"
+                f"Replace pronouns (it, they, their, that, this) with the ticker: {ticker}\n"
+                f"Strip question words. Keep key financial terms.\n\n"
+                f"Question: {question}\n"
+                f"Search query:"
+            ),
+        }],
+    )
+    return response.choices[0].message.content.strip()
+
+
+# ---------------------------------------------------------------------------
 # Core agent function
 # ---------------------------------------------------------------------------
 @traceable(name="filings-agent")
@@ -137,12 +172,13 @@ async def answer_filing_question(
     # ------------------------------------------------------------------
     # Step 1: Retrieve relevant chunks
     # ------------------------------------------------------------------
+    search_query = await _make_search_query(question, ticker)
     logger.info(
-        "Retrieving chunks for: %r ticker=%r filing_types=%r k=%d",
-        question, ticker, filing_types, k,
+        "Retrieving chunks: original=%r search_query=%r ticker=%r filing_types=%r k=%d",
+        question, search_query, ticker, filing_types, k,
     )
     chunks = await retrieve_chunks(
-        query=question,
+        query=search_query,
         db=db,
         ticker=ticker,
         k=k,

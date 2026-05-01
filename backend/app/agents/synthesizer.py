@@ -41,6 +41,11 @@ Structure your answer in the following order:
 - Keep the answer under 400 words unless the question explicitly asks for depth.
 - Use **bold** for company names and key metrics on first mention.
 
+## Conversation follow-ups
+- Prior Q&A turns may appear before the current research message.
+- Use them to resolve references like "that figure", "point 3", "you mentioned X", or "elaborate on Y".
+- If the follow-up question is better answered from the prior answer than from the new research, do so — but still incorporate any new data retrieved.
+
 ## Edge cases
 - If a source is absent, skip its section entirely — do not mention its absence unless it is material to answering the question.
 - If the question asks about a forward-looking metric (e.g., next quarter guidance) and only historical data is present, say so in one sentence, then answer with what is available.
@@ -66,29 +71,33 @@ def make_synthesizer_node(
 
         combined = "\n\n".join(parts)
 
+        # Build messages: prepend prior Q&A turns so the model can resolve
+        # follow-up references ("that figure", "elaborate on point 3", etc.)
+        prior = state.get("messages") or []
+        messages = [{"role": m["role"], "content": m["content"]} for m in prior]
+        messages.append({
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    # Cache the research data — the expensive prefix that repeats across calls
+                    "text": f"Research collected:\n{combined}",
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {
+                    "type": "text",
+                    "text": f"\nQuestion: {state['question']}\n\nSynthesize a final answer.",
+                },
+            ],
+        })
+
         client = wrap_anthropic(anthropic.AsyncAnthropic())
         chunks: list[str] = []
         async with client.messages.stream(
             model=MODEL,
             max_tokens=MAX_TOKENS,
             system=SYNTH_SYSTEM,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            # Cache the research data — the expensive prefix that repeats across calls
-                            "text": f"Research collected:\n{combined}",
-                            "cache_control": {"type": "ephemeral"},
-                        },
-                        {
-                            "type": "text",
-                            "text": f"\nQuestion: {state['question']}\n\nSynthesize a final answer.",
-                        },
-                    ],
-                },
-            ],
+            messages=messages,
         ) as stream:
             async for text in stream.text_stream:
                 chunks.append(text)
