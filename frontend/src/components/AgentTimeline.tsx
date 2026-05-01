@@ -169,19 +169,17 @@ function useElapsed(
   startedAt: number | null,
   completedAt: number | null,
 ): number {
-  const [elapsed, setElapsed] = useState(0);
+  const [runningElapsed, setRunningElapsed] = useState(0);
 
   useEffect(() => {
-    if (!startedAt) return;
-    if (completedAt) {
-      setElapsed(completedAt - startedAt);
-      return;
-    }
-    const id = setInterval(() => setElapsed(Date.now() - startedAt), 100);
+    if (!startedAt || completedAt) return;
+    const id = setInterval(() => setRunningElapsed(Date.now() - startedAt), 100);
     return () => clearInterval(id);
   }, [startedAt, completedAt]);
 
-  return elapsed;
+  // Synchronous calculation when complete — avoids a missed render frame
+  if (completedAt && startedAt) return completedAt - startedAt;
+  return runningElapsed;
 }
 
 // ── Message copy ───────────────────────────────────────────────────────────

@@ -63,6 +63,17 @@ export function ChatWindow({
               </div>
             )}
 
+            {/* Timing footer: rendered after history loads, persists until next query */}
+            {streamingState?.phase === "done" && pendingQuestion === null &&
+              streamingState.completedAt && streamingState.startedAt && (
+              <div style={styles.completeLine}>
+                <span style={{ color: "#10b981", fontSize: "13px" }}>✓</span>
+                <span style={styles.completeText}>
+                  Research completed in {((streamingState.completedAt - streamingState.startedAt) / 1000).toFixed(1)}s
+                </span>
+              </div>
+            )}
+
             <div ref={bottomRef} style={{ height: "1px" }} />
           </div>
         )}
@@ -204,6 +215,17 @@ const styles: Record<string, React.CSSProperties> = {
     border: "1px solid #e5e7eb",
     borderRadius: "12px",
     padding: "20px 24px",
+  },
+  completeLine: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    paddingTop: "4px",
+  },
+  completeText: {
+    fontSize: "13px",
+    color: "#6b7280",
+    fontWeight: 500,
   },
   inputBar: {
     flexShrink: 0,
