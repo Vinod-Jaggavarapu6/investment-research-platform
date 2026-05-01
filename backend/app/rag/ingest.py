@@ -16,7 +16,6 @@ Why only those sections?
 """
 
 import re
-import time
 import logging
 from pathlib import Path
 from dataclasses import dataclass
@@ -26,17 +25,13 @@ from sec_edgar_downloader import Downloader
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Data structure for a parsed section
-# ---------------------------------------------------------------------------
-
 @dataclass
 class FilingSection:
     ticker:      str
     year:        int
-    section:     str         # e.g. "Item 1A", "MD&A", "Results of Operations"
-    text:        str         # clean extracted text
-    filing_type: str = "10-K"  # "10-K", "10-Q", or "8-K"
+    section:     str         
+    text:        str         
+    filing_type: str = "10-K"
 
 
 # ---------------------------------------------------------------------------
@@ -47,18 +42,6 @@ class FilingSection:
 # SEC filings aren't consistent — "Item 1A" might appear as
 # "ITEM 1A", "Item 1A.", "ITEM 1A." etc. We handle all variants.
 
-# SECTIONS = {
-#     "Item 1":  [r"item\s*1[\.\s]",         r"business"],
-#     "Item 1A": [r"item\s*1a[\.\s]",        r"risk factors"],
-#     "Item 7":  [r"item\s*7[\.\s]",         r"management.*discussion"],
-#     "Item 7A": [r"item\s*7a[\.\s]",        r"quantitative.*qualitative"],
-#     "Item 8":  [r"item\s*8[\.\s]",         r"financial statements"],
-# }
-
-
-# ---------------------------------------------------------------------------
-# Downloader
-# ---------------------------------------------------------------------------
 
 def download_10k(ticker: str, download_dir: Path, after: str = "2023-01-01") -> Path:
     """
@@ -153,10 +136,6 @@ def extract_html_from_submission(submission_path: Path, filing_type: str = "10-K
         f"The filing format may be unusual."
     )
 
-# ---------------------------------------------------------------------------
-# HTML Parser
-# ---------------------------------------------------------------------------
-
 def parse_10k(html_path: Path, ticker: str, year: int) -> list[FilingSection]:
     """
     Parse a 10-K HTML file and extract text for each target section.
@@ -202,75 +181,6 @@ def parse_10k(html_path: Path, ticker: str, year: int) -> list[FilingSection]:
     logger.info(f"Extracted {len(sections)} sections for {ticker} {year}")
 
     return sections
-
-
-# def extract_sections(
-#     text: str,
-#     ticker: str,
-#     year: int
-# ) -> list[FilingSection]:
-#     """
-#     Find where each Item starts in the text and slice out that section.
-
-#     The challenge: "Item 1" appears multiple times in a 10-K —
-#     once in the table of contents, and once as the actual section heading.
-#     We skip table-of-contents occurrences by requiring a minimum text
-#     length between sections.
-#     """
-#     # Find all positions of each section heading in the text
-#     section_positions: dict[str, list[int]] = {}
-
-#     for section_name, patterns in SECTIONS.items():
-#         positions = []
-#         for pattern in patterns:
-#             for match in re.finditer(pattern, text, re.IGNORECASE):
-#                 positions.append(match.start())
-#         # Sort and deduplicate positions within 500 chars of each other
-#         positions = sorted(set(positions))
-#         section_positions[section_name] = positions
-
-#     # Build a flat list of (position, section_name) sorted by position
-#     all_hits: list[tuple[int, str]] = []
-#     for section_name, positions in section_positions.items():
-#         for pos in positions:
-#             all_hits.append((pos, section_name))
-
-#     all_hits.sort(key=lambda x: x[0])
-
-#     if not all_hits:
-#         logger.warning(f"No sections found for {ticker} {year}")
-#         return []
-
-#     # Slice text between consecutive section hits
-#     # Skip hits that produce < 500 characters (table of contents entries)
-#     results: list[FilingSection] = []
-#     seen_sections: set[str] = set()
-
-#     for i, (start_pos, section_name) in enumerate(all_hits):
-#         if section_name in seen_sections:
-#             continue  # already captured this section
-
-#         # End of this section = start of next hit (or end of document)
-#         end_pos = all_hits[i + 1][0] if i + 1 < len(all_hits) else len(text)
-#         section_text = text[start_pos:end_pos].strip()
-
-#         # Skip if too short — almost certainly a TOC entry
-#         if len(section_text) < 500:
-#             continue
-
-#         seen_sections.add(section_name)
-#         results.append(FilingSection(
-#             ticker=ticker,
-#             year=year,
-#             section=section_name,
-#             text=section_text,
-#         ))
-#         logger.info(
-#             f"  {section_name}: {len(section_text):,} chars"
-#         )
-
-#     return results
-
 
 def extract_sections(
     text: str,

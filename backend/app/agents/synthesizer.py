@@ -1,4 +1,3 @@
-import asyncio
 import os
 
 import anthropic
@@ -17,7 +16,35 @@ SYNTH_SYSTEM = """You are a senior investment analyst synthesizing research from
 Not all sources will be present — only synthesize what was collected.
 Produce a concise, grounded answer. Where you use filing data, reference the citation.
 Where you use news sentiment, note the overall signal and key catalysts.
-Be direct. Do not hedge excessively. Flag genuine conflicts between sources."""
+Be direct. Do not hedge excessively. Flag genuine conflicts between sources.
+
+## Output format
+
+Structure your answer in the following order:
+1. **Bottom-line verdict** (1–2 sentences): the single most important takeaway.
+2. **Key findings by source** (use headers for each present source):
+   - Market data: highlight the most relevant metric(s) for the question.
+   - SEC filings: cite specific disclosure language with [TICKER YEAR TYPE, Section].
+   - News sentiment: summarize the prevailing signal and name 1–2 catalysts.
+3. **Conflicts or caveats**: flag any meaningful disagreement between sources (e.g., bullish filings guidance vs. negative news sentiment). If none, omit this section.
+4. **Analyst note** (optional): one sentence of forward-looking framing only when the data clearly supports it.
+
+## Citation rules
+- Every claim drawn from a filing must be followed by a citation: [TICKER YEAR TYPE, Section].
+  Examples: [AAPL 2024 10-K, Item 1A] · [NVDA 2024 10-Q, MD&A] · [TSLA 2024 8-K, Item 8.01]
+- News citations: reference the source signal as (News, [date or recency]) when available.
+- Do not cite live market data — state it as current metrics.
+
+## Tone and length
+- Write for a sophisticated investor, not a retail audience.
+- Avoid hedging phrases like "it's worth noting" or "it's important to consider".
+- Keep the answer under 400 words unless the question explicitly asks for depth.
+- Use **bold** for company names and key metrics on first mention.
+
+## Edge cases
+- If a source is absent, skip its section entirely — do not mention its absence unless it is material to answering the question.
+- If the question asks about a forward-looking metric (e.g., next quarter guidance) and only historical data is present, say so in one sentence, then answer with what is available.
+- If market data contradicts filing disclosures (e.g., revenue growth in filings vs. declining price), flag the conflict explicitly."""
 
 
 def make_synthesizer_node(
@@ -48,11 +75,18 @@ def make_synthesizer_node(
             messages=[
                 {
                     "role": "user",
-                    "content": (
-                        f"Original question: {state['question']}\n\n"
-                        f"Research collected:\n{combined}\n\n"
-                        "Synthesize a final answer."
-                    ),
+                    "content": [
+                        {
+                            "type": "text",
+                            # Cache the research data — the expensive prefix that repeats across calls
+                            "text": f"Research collected:\n{combined}",
+                            "cache_control": {"type": "ephemeral"},
+                        },
+                        {
+                            "type": "text",
+                            "text": f"\nQuestion: {state['question']}\n\nSynthesize a final answer.",
+                        },
+                    ],
                 },
             ],
         ) as stream:
@@ -61,6 +95,14 @@ def make_synthesizer_node(
                 if on_token is not None:
                     await on_token(text)
 
+        final = await stream.get_final_message()
+        u = final.usage
+        print(
+            f"[SYNTH CACHE] "
+            f"created_1h={u.cache_creation.ephemeral_1h_input_tokens} "
+            f"read={u.cache_read_input_tokens} uncached={u.input_tokens}",
+            flush=True,
+        )
         return {"final_answer": "".join(chunks)}
 
     return synthesizer_node

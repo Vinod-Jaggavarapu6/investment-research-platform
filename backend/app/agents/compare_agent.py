@@ -1,10 +1,10 @@
 """
-compare_agent.py — Multi-ticker comparison using parallel SEC filing retrieval
+compare_agent.py — Multi-ticker comparison using parallel market data + SEC filing retrieval
 
 Flow:
   1. Extract tickers list from state (set by router for "compare" route)
-  2. Retrieve filing chunks for each ticker in parallel (asyncio.gather)
-  3. Format per-ticker context blocks
+  2. Fetch live market data AND filing chunks for each ticker in parallel
+  3. Format per-ticker context blocks (market data section + filing section)
   4. Call Claude to produce a structured comparison with citations
 """
 
@@ -17,6 +17,8 @@ from langsmith.wrappers import wrap_anthropic
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.tools.retrieval import retrieve_chunks
+from app.tools.market_data import fetch_financial_data
+from .financial_agent import _format_for_prompt
 from ..state import AgentState
 
 logger = logging.getLogger(__name__)
@@ -27,19 +29,40 @@ RETRIEVAL_K = 5   # chunks per ticker
 
 COMPARE_SYSTEM = """You are a senior investment analyst specializing in comparative company analysis.
 
-You compare companies strictly using excerpts from their SEC filings (10-K annual, 10-Q quarterly, 8-K event).
+You have access to two data sources per company:
+1. **Live market data** — current prices, valuation ratios, margins, and balance sheet metrics
+2. **SEC filing excerpts** — 10-K annual, 10-Q quarterly, 8-K event disclosures
 
-Your comparison must:
-1. Be grounded in the provided filing excerpts — do not use outside knowledge
-2. Open with a brief framing of what is being compared
-3. Present key findings per company (one section each)
-4. Follow with a head-to-head comparison table or bullet list on the specific dimension asked
-5. Close with a 2-3 sentence bottom-line summary of the most important difference
+## Core rules
+- Ground every claim in the data provided. Do not use outside knowledge or training data.
+- If a company's filing data is absent or thin, say so explicitly in its section.
+- Live market metrics (price, P/E, margins) require no citation — state them as current figures.
+- Every claim drawn from a filing must end with a citation: [TICKER YEAR FILING-TYPE, Section].
+  Examples: [AAPL 2025 10-K, Item 1A] · [NVDA 2024 10-Q, MD&A] · [TSLA 2024 8-K, Item 8.01]
 
-Citation format: [TICKER YEAR FILING-TYPE, Section] after each factual claim.
-Example: [AAPL 2025 10-K, Item 1A] or [NVDA 2024 10-Q, MD&A]
+## Required output structure
+1. **Framing** (1–2 sentences): what dimension is being compared and which companies.
+2. **Per-company snapshot** (one section per ticker, in the order provided):
+   - Lead with the most relevant live market metric for the question (e.g., P/E, growth, margin).
+   - Follow with any filing-based context that adds depth.
+   - Cite every filing claim. State market metrics inline without citation.
+   - Note if data is sparse: "Limited filing data available for [TICKER]."
+3. **Head-to-head comparison**: a markdown table comparing the companies on the specific metric or dimension asked. Include both live market figures and filing-derived figures where relevant.
+4. **Bottom-line summary** (2–3 sentences): the single most important difference, stated plainly.
+   - If the question asks which is better to buy, give a relative valuation verdict grounded in the metrics (e.g., which appears more attractively valued, which has stronger fundamentals). This is not personalized investment advice — it is a data-driven relative assessment.
 
-If a company's filing data is absent or thin, say so explicitly.
+## Tone and constraints
+- Write for a sophisticated investor.
+- Avoid filler phrases: "it's worth noting", "it's important to consider", "based on the above".
+- Do not give personalized investment advice. Relative valuation assessments based on metrics are acceptable.
+- Keep the total response under 600 words unless the question explicitly requires deeper analysis.
+- Use **bold** for company tickers on first mention in each section.
+
+## Edge cases
+- If market data fetch failed for a company, note it and rely on filing data only for that company.
+- If only one company has filing data, produce the structure above and flag the missing company.
+- If the filings span different years for different companies, note the year mismatch when it could affect the comparison.
+- Quantitative metrics should be stated as exact figures, not rounded estimates.
 """
 
 
@@ -54,12 +77,36 @@ async def _retrieve_for_ticker(
     return ticker, chunks
 
 
-def _build_context(per_ticker: dict[str, list[dict]]) -> str:
-    """Format per-ticker chunks into a context block the LLM can read."""
-    parts = []
+async def _fetch_market_for_ticker(ticker: str) -> tuple[str, str | None]:
+    """Fetch live market data for a ticker in a thread executor (sync → async)."""
+    loop = asyncio.get_event_loop()
+    try:
+        raw = await loop.run_in_executor(None, fetch_financial_data, ticker)
+        return ticker, _format_for_prompt(raw)
+    except Exception as e:
+        logger.warning("[compare] market data fetch failed for %s: %s", ticker, e)
+        return ticker, None
+
+
+def _build_context(
+    per_ticker: dict[str, list[dict]],
+    market_data: dict[str, str | None],
+) -> str:
+    """Format per-ticker market data + filing chunks into a context block."""
+    # ── Live market data section ──────────────────────────────────────────
+    market_parts = []
+    for ticker in per_ticker:
+        md = market_data.get(ticker)
+        if md:
+            market_parts.append(md)
+        else:
+            market_parts.append(f"=== {ticker} ===\n[Live market data unavailable for {ticker}]\n")
+
+    # ── SEC filing excerpts section ───────────────────────────────────────
+    filing_parts = []
     for ticker, chunks in per_ticker.items():
         if not chunks:
-            parts.append(f"=== {ticker} ===\n[No filing data available for {ticker}]\n")
+            filing_parts.append(f"=== {ticker} ===\n[No filing data available for {ticker}]\n")
             continue
         lines = [f"=== {ticker} ==="]
         for i, c in enumerate(chunks, 1):
@@ -68,8 +115,14 @@ def _build_context(per_ticker: dict[str, list[dict]]) -> str:
             lines.append(
                 f"--- Source {i}: {label} (relevance: {c['score']:.2f}) ---\n{c['text']}"
             )
-        parts.append("\n".join(lines))
-    return "\n\n".join(parts)
+        filing_parts.append("\n".join(lines))
+
+    market_block  = "\n\n".join(market_parts)
+    filings_block = "\n\n".join(filing_parts)
+    return (
+        f"## Live Market Data\n\n{market_block}\n\n"
+        f"## SEC Filing Excerpts\n\n{filings_block}"
+    )
 
 
 async def compare_companies(
@@ -79,17 +132,23 @@ async def compare_companies(
     k:        int = RETRIEVAL_K,
 ) -> tuple[str, list[dict]]:
     """
-    Run retrieval for each ticker in parallel, then call Claude to compare.
+    Run market data fetch + filing retrieval for each ticker in parallel, then call Claude.
     Returns (answer_text, all_citations).
     """
-    # Parallel retrieval — one pgvector query per ticker
-    tasks = [_retrieve_for_ticker(question, t, db, k) for t in tickers]
-    raw_results = await asyncio.gather(*tasks, return_exceptions=True)
+    # Parallel fetch: live market data + pgvector retrieval for every ticker simultaneously
+    filing_tasks = [_retrieve_for_ticker(question, t, db, k) for t in tickers]
+    market_tasks = [_fetch_market_for_ticker(t) for t in tickers]
+    all_tasks = filing_tasks + market_tasks
+    all_results = await asyncio.gather(*all_tasks, return_exceptions=True)
+
+    filing_results = all_results[:len(tickers)]
+    market_results = all_results[len(tickers):]
 
     per_ticker: dict[str, list[dict]] = {}
     all_citations: list[dict] = []
+    market_data: dict[str, str | None] = {}
 
-    for item in raw_results:
+    for item in filing_results:
         if isinstance(item, Exception):
             logger.error("[compare] retrieval error: %s", item)
             continue
@@ -97,30 +156,54 @@ async def compare_companies(
         per_ticker[ticker] = chunks
         all_citations.extend(chunks)
 
+    for item in market_results:
+        if isinstance(item, Exception):
+            logger.error("[compare] market fetch error: %s", item)
+            continue
+        ticker, formatted = item
+        market_data[ticker] = formatted
+
     # Ensure every requested ticker appears (even if empty)
     for t in tickers:
         per_ticker.setdefault(t, [])
+        market_data.setdefault(t, None)
 
-    context = _build_context(per_ticker)
+    context = _build_context(per_ticker, market_data)
 
     tickers_str = " vs ".join(tickers)
-    user_message = (
-        f"Compare {tickers_str} based on the question below.\n\n"
-        f"Question: {question}\n\n"
-        f"SEC Filing Excerpts (grouped by company):\n{context}\n\n"
-        f"Provide:\n"
-        f"1. Key findings per company (separate section for each)\n"
-        f"2. Head-to-head comparison on the specific dimension asked\n"
-        f"3. Bottom-line summary (2-3 sentences)\n\n"
-        f"Cite every factual claim with [TICKER YEAR FILING-TYPE, Section]."
-    )
 
     client = wrap_anthropic(anthropic.AsyncAnthropic())
     response = await client.messages.create(
         model=MODEL,
         max_tokens=MAX_TOKENS,
         system=COMPARE_SYSTEM,
-        messages=[{"role": "user", "content": user_message}],
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        # Cache the data context — reusable across different questions on the same ticker pair
+                        "text": (
+                            f"Compare {tickers_str} based on the question below.\n\n"
+                            f"Data (live market metrics + SEC filing excerpts, grouped by company):\n{context}"
+                        ),
+                        "cache_control": {"type": "ephemeral"},
+                    },
+                    {
+                        "type": "text",
+                        "text": (
+                            f"\n\nQuestion: {question}\n\n"
+                            f"Provide:\n"
+                            f"1. Per-company snapshot (lead with market metrics, add filing context)\n"
+                            f"2. Head-to-head comparison table on the specific dimension asked\n"
+                            f"3. Bottom-line summary (2-3 sentences) — if asked which is better to buy, give a relative valuation verdict\n\n"
+                            f"Cite filing claims with [TICKER YEAR FILING-TYPE, Section]. State market metrics inline without citation."
+                        ),
+                    },
+                ],
+            }
+        ],
     )
 
     answer = response.content[0].text

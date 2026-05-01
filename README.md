@@ -79,6 +79,7 @@ A LangGraph `StateGraph` routes every question through the right combination of 
 | `comprehensive`  | Market + Filings + News | Full analysis                         |
 | `compare`        | Compare                 | Side-by-side of 2–5 companies         |
 
+<!--
 ### RAG over SEC Filings (10-K · 10-Q · 8-K)
 
 For each of 20 tickers, the ingest pipeline downloads:
@@ -175,4 +176,4 @@ investment-research/
 └── infra/
     ├── docker-compose.yml           # Local 4-service stack
     └── .env                         # Postgres credentials
-```
+``` -->

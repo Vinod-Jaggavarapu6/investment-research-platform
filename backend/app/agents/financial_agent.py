@@ -30,11 +30,6 @@ client = wrap_openai(openai.OpenAI())
 MODEL      = os.getenv("FINANCIAL_AGENT_MODEL", "gpt-4o")
 MAX_TOKENS = int(os.getenv("FINANCIAL_AGENT_MAX_TOKENS", "1500"))
 
-
-# ─────────────────────────────────────────────
-# THE TOOL DEFINITION  (OpenAI function-calling format)
-# ─────────────────────────────────────────────
-
 SUBMIT_ANALYSIS_TOOL = {
     "type": "function",
     "function": {
@@ -139,11 +134,6 @@ SUBMIT_ANALYSIS_TOOL = {
         },
     },
 }
-
-
-# ─────────────────────────────────────────────
-# SYSTEM PROMPT
-# ─────────────────────────────────────────────
 
 SYSTEM_PROMPT = """\
 You are a senior equity research analyst with CFA designation.

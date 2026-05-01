@@ -138,17 +138,3 @@ def get_checkpointer_url() -> str:
     """
     return DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
 
-
-async def create_checkpointer() -> AsyncPostgresSaver:
-    """
-    Create and set up the LangGraph Postgres checkpointer.
-    Uses async context manager correctly.
-    """
-    url = get_checkpointer_url()
-    async with AsyncPostgresSaver.from_conn_string(url) as checkpointer:
-        await checkpointer.setup()
-    
-    # Return a fresh instance for use throughout app lifetime
-    # setup() only needs to run once to create tables
-    conn = await AsyncPostgresSaver.from_conn_string(url).__aenter__()
-    return conn

@@ -2,7 +2,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 from pydantic import BaseModel, Field
-from typing import Optional, Any
+from typing import Optional
 class FilingsRequest(BaseModel):
     question: str
     ticker:   Optional[str] = None
@@ -267,81 +267,3 @@ class NewsResponse(BaseModel):
     error:     Optional[str]           = None
     duration_ms: Optional[float]       = None
 
-
-
-# ---------------------------------------------------------------------------
-# Defines the structured event types streamed over SSE.
-# Every event has a `type` field so the frontend can switch on it.
-# Using Pydantic ensures we never accidentally stream malformed JSON.
-# ---------------------------------------------------------------------------
-
-class NodeStartEvent(BaseModel):
-    """
-    Emitted just BEFORE a LangGraph node begins executing.
-    Frontend can use this to show "⏳ Fetching financials..."
-    """
-    type: str = "node_start"
-    node: str                     # e.g. "financials", "sentiment", "synthesis"
-
-
-class NodeCompleteEvent(BaseModel):
-    """
-    Emitted just AFTER a node finishes.
-    Carries the data that node produced — lets frontend show partial results
-    as they arrive instead of waiting for everything.
-    """
-    type: str = "node_complete"
-    node: str
-    data: Optional[Any] = None    # The node's output (financials dict, news list, etc.)
-
-
-class TokenEvent(BaseModel):
-    """
-    Emitted for EACH token from the final synthesis LLM call.
-    This is what creates the "typewriter" effect in the UI.
-    
-    Why token-by-token?
-    - LLMs generate text sequentially. The first token might come in 500ms,
-      but the full report takes 10 seconds. Streaming removes that perceived wait.
-    """
-    type: str = "token"
-    text: str                     # A single token or small chunk of text
-
-
-class ErrorEvent(BaseModel):
-    """
-    Emitted if something goes wrong during the research pipeline.
-    The frontend should display this and stop showing a loading state.
-    """
-    type: str = "error"
-    message: str
-    node: Optional[str] = None    # Which node failed, if applicable
-
-
-class DoneEvent(BaseModel):
-    """
-    The final event. Signals the stream is complete.
-    Carries the assembled answer for the frontend to store/display.
-    """
-    type: str = "done"
-    thread_id: str
-    route: str
-    final_answer: str
-    citations: list = []
-
-
-# ---------------------------------------------------------------------------
-# Helper: serialize any event model to the SSE `data:` line format
-# ---------------------------------------------------------------------------
-
-def event_to_sse(event: BaseModel) -> str:
-    """
-    Converts a Pydantic model to the SSE wire format.
-    
-    SSE protocol requires:
-        data: <json_string>\n\n
-    
-    The double newline (\n\n) signals the end of one event.
-    The browser's EventSource API parses this automatically.
-    """
-    return event.model_dump_json()
