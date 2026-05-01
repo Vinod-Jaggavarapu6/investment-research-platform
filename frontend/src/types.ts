@@ -45,8 +45,27 @@ export type SSEEvent =
   | { type: "node_start"; node: NodeName }
   | { type: "node_complete"; node: NodeName; data: Record<string, unknown> }
   | { type: "token"; text: string }
-  | { type: "done"; report: string | null; ingesting_ticker?: string | null; citations?: Citation[] }
+  | { type: "done"; report: string | null; ingesting_ticker?: string | null; citations?: Citation[]; conversation_id?: string }
+  | { type: "conversation_ready"; conversation_id: string }
   | { type: "error"; message: string };
+
+// Conversation and message types from backend
+export interface Conversation {
+  id: string;
+  session_id: string;
+  title: string;
+  ticker: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Message {
+  id: string;
+  conversation_id: string;
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+}
 
 // UI state for a single agent node
 export interface AgentState {
@@ -69,6 +88,7 @@ export interface ResearchState {
   completedAt: number | null;
   ingestPending: boolean;
   ingestTicker: string | null;
+  conversationId: string | null;
 }
 
 // Display labels for each node
@@ -140,6 +160,7 @@ export function makeInitialResearchState(): ResearchState {
     citations: [],
     ingestPending: false,
     ingestTicker: null,
+    conversationId: null,
     nodes: {
       router: { ...INITIAL_NODE_STATE },
       market_agent: { ...INITIAL_NODE_STATE },

@@ -10,7 +10,6 @@ Key concepts implemented here:
 
 import logging
 import time
-from typing import Any
 import random
 
 import numpy as np

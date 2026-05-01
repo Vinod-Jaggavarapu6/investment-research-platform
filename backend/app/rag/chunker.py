@@ -14,17 +14,12 @@ from app.rag.ingest import FilingSection
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Output data structure
-# ---------------------------------------------------------------------------
-
 @dataclass
 class ChunkRecord:
-    text:        str    # the chunk text — goes to embedding API
-    ticker:      str    # e.g. "AAPL"
-    year:        int    # e.g. 2024
-    section:     str    # e.g. "Item 7"
+    text:        str    
+    ticker:      str   
+    year:        int   
+    section:     str   
     filing_type: str    # "10-K", "10-Q", or "8-K"
     chunk_index: int    # position within this filing (0, 1, 2, ...)
 
@@ -143,7 +138,7 @@ def chunk_filing(sections: list[FilingSection]) -> list[ChunkRecord]:
         section_chunks = chunk_section(
             section=section,
             splitter=splitter,
-            start_index=len(all_chunks),  # offset = how many chunks so far
+            start_index=len(all_chunks),  
         )
         all_chunks.extend(section_chunks)
 

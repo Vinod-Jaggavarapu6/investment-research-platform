@@ -14,3 +14,4 @@ class AgentState(TypedDict, total=False):
     final_answer:   Optional[str]
     skip_cache:     Optional[bool]
     ingest_pending: Optional[bool]
+    messages:       Optional[list[dict]]  # prior conversation turns [{role, content}]

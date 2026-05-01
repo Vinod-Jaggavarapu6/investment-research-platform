@@ -6,12 +6,26 @@ import {
   ROUTE_NODES,
 } from "./types";
 
+function getOrCreateSessionId(): string {
+  const key = "irp_session_id";
+  let id = localStorage.getItem(key);
+  if (!id) {
+    id =
+      typeof crypto !== "undefined" && crypto.randomUUID
+        ? crypto.randomUUID()
+        : Math.random().toString(36).slice(2) + Date.now().toString(36);
+    localStorage.setItem(key, id);
+  }
+  return id;
+}
+
 export function useResearchStream() {
   const [state, setState] = useState<ResearchState | null>(null);
+  const [sessionId] = useState<string>(() => getOrCreateSessionId());
   const sourceRef = useRef<EventSource | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Ref so the poll callback always calls the latest `start` without stale closure
-  const startFnRef = useRef<(q: string) => void>(() => {});
+  const startFnRef = useRef<(q: string, cid?: string | null) => void>(() => {});
 
   const stopPolling = useCallback(() => {
     if (pollRef.current !== null) {
@@ -26,12 +40,18 @@ export function useResearchStream() {
     stopPolling();
   }, [stopPolling]);
 
+  const reset = useCallback(() => {
+    close();
+    setState(null);
+  }, [close]);
+
   const start = useCallback(
-    (question: string) => {
+    (question: string, conversationId?: string | null) => {
       close();
       setState(makeInitialResearchState());
 
-      const params = new URLSearchParams({ question });
+      const params = new URLSearchParams({ question, session_id: sessionId });
+      if (conversationId) params.set("conversation_id", conversationId);
       const source = new EventSource(`/research/stream?${params}`);
       sourceRef.current = source;
 
@@ -63,11 +83,8 @@ export function useResearchStream() {
             console.log(
               `[ingest] filings not ready for ${ticker} — polling every ${POLL_INTERVAL_MS / 1000}s`,
             );
-            setState((prev) =>
-              prev
-                ? { ...prev, ingestPending: true, ingestTicker: ticker }
-                : prev,
-            );
+            // ingestPending is already set atomically by applyEvent above —
+            // no separate setState needed here.
             pollRef.current = setInterval(async () => {
               try {
                 const res = await fetch(`/ingest/status/${ticker}`);
@@ -77,10 +94,13 @@ export function useResearchStream() {
                 if (data.status === "ready") {
                   console.log(`[ingest] ${ticker} filings ready — re-running research`);
                   stopPolling();
-                  setState((prev) =>
-                    prev ? { ...prev, ingestPending: false } : prev,
-                  );
-                  startFnRef.current(question);
+                  // Read the resolved conversationId from current state so the
+                  // retry reuses the same conversation instead of creating a new one.
+                  setState((prev) => {
+                    const resolvedConvId = prev?.conversationId ?? conversationId ?? null;
+                    setTimeout(() => startFnRef.current(question, resolvedConvId), 0);
+                    return prev ? { ...prev, ingestPending: false } : prev;
+                  });
 
                 } else if (data.status === "ingesting") {
                   // Still running — reset the not-found streak and keep waiting
@@ -130,7 +150,7 @@ export function useResearchStream() {
         sourceRef.current = null;
       };
     },
-    [close, stopPolling],
+    [close, stopPolling, sessionId],
   );
 
   // Keep ref in sync so the poll interval never captures a stale start
@@ -138,7 +158,7 @@ export function useResearchStream() {
     startFnRef.current = start;
   }, [start]);
 
-  return { state, start, stop: close };
+  return { state, start, stop: close, reset, sessionId };
 }
 
 // Pure state reducer — applies one SSE event to ResearchState
@@ -198,13 +218,23 @@ function applyEvent(state: ResearchState, event: SSEEvent): ResearchState {
       };
     }
 
+    case "conversation_ready": {
+      return { ...state, conversationId: event.conversation_id };
+    }
+
     case "done": {
+      const isIngestPending = Boolean(event.ingesting_ticker);
       return {
         ...state,
-        phase: "done",
+        // Keep phase as "streaming" while waiting for ingest — prevents the
+        // "Research complete" flash before ingestPending is set.
+        phase: isIngestPending ? "streaming" : "done",
+        ingestPending: isIngestPending,
+        ingestTicker: event.ingesting_ticker ?? state.ingestTicker,
         finalReport: event.report,
         citations: event.citations ?? [],
-        completedAt: Date.now(),
+        completedAt: isIngestPending ? 0 : Date.now(),
+        conversationId: event.conversation_id ?? state.conversationId,
       };
     }
 

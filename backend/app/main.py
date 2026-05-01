@@ -15,14 +15,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
+from sqlalchemy import select, delete as sa_delete, update as sa_update
+
 from app.agents.financial_agent import analyze_ticker
 from app.agents.filings_agent import answer_filing_question
-from app.database import create_tables, get_db, get_checkpointer_url
+from app.database import create_tables, get_db, get_checkpointer_url, Conversation, Message
 from app.models import (
     AnalysisRequest, AnalysisResponse,
     FilingsRequest,
     NewsRequest, NewsResponse,
     ResearchRequest, ResearchResponse,
+    ConversationResponse, MessageResponse,
 )
 from app.streaming import research_stream
 from app.tools.retrieval import retrieve_chunks, format_retrieval_response, ticker_has_data
@@ -260,44 +263,6 @@ async def ask_filings(
     }
 
 
-# @app.post(
-#     "/research",
-#     response_model=ResearchResponse,
-#     tags=["Research"],
-#     summary="Multi-agent research pipeline",
-#     description=(
-#         "Routes the question through a LangGraph pipeline — "
-#         "market data agent (yfinance), filings agent (FAISS + Claude), "
-#         "and a synthesis layer producing a unified grounded answer."
-#     ),
-# )
-# async def research(
-#     req: AgentState,
-#     db: AsyncSession = Depends(get_db),
-# ):
-#     from .graph import build_graph          # local import avoids circular deps
-
-#     thread_id = req.thread_id or str(uuid.uuid4())
-#     config    = {"configurable": {"thread_id": thread_id}}
-
-#     graph  = build_graph(db=db, checkpointer=_checkpointer)
-#     result = await graph.ainvoke(
-#         {"question": req.question},
-#         config=config,
-#     )
-
-#     if not result.get("final_answer"):
-#         raise HTTPException(status_code=500, detail="Graph produced no answer")
-
-#     return ResearchResponse(
-#         thread_id    = thread_id,
-#         route        = result.get("route", "unknown"),
-#         final_answer = result["final_answer"],
-#         citations    = result.get("citations") or [],
-#     )
-
-# main.py — fix the /research endpoint signature
-
 @app.post(
     "/research",
     response_model=ResearchResponse,
@@ -381,6 +346,79 @@ async def news_sentiment(request: NewsRequest):
         raise HTTPException(status_code=503, detail=result.error)
 
     return result
+
+
+### ══════════════════════════════════════════════════════
+### Conversation endpoints
+### ══════════════════════════════════════════════════════
+
+@app.get("/conversations", tags=["Conversations"], response_model=list[ConversationResponse])
+async def list_conversations(
+    session_id: str = Query(..., description="Browser session UUID"),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Conversation)
+        .where(Conversation.session_id == session_id)
+        .order_by(Conversation.updated_at.desc())
+    )
+    return [ConversationResponse.model_validate(c) for c in result.scalars().all()]
+
+
+@app.post("/conversations", tags=["Conversations"], response_model=ConversationResponse, status_code=201)
+async def create_conversation(
+    session_id: str           = Query(...),
+    ticker:     Optional[str] = Query(None),
+    title:      Optional[str] = Query(None),
+    db:         AsyncSession  = Depends(get_db),
+):
+    ticker_clean = ticker.upper() if ticker else None
+    conv = Conversation(
+        id         = str(uuid.uuid4()),
+        session_id = session_id,
+        title      = title or (f"{ticker_clean} — New Research" if ticker_clean else "New Research"),
+        ticker     = ticker_clean,
+    )
+    db.add(conv)
+    await db.commit()
+    await db.refresh(conv)
+    return ConversationResponse.model_validate(conv)
+
+
+@app.get("/conversations/{conversation_id}/messages", tags=["Conversations"])
+async def get_conversation_messages(
+    conversation_id: str         = Path(...),
+    db:              AsyncSession = Depends(get_db),
+):
+    conv_result = await db.execute(
+        select(Conversation).where(Conversation.id == conversation_id)
+    )
+    conv = conv_result.scalar_one_or_none()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    msgs_result = await db.execute(
+        select(Message)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.created_at.asc())
+    )
+    return {
+        "conversation": ConversationResponse.model_validate(conv),
+        "messages":     [MessageResponse.model_validate(m) for m in msgs_result.scalars().all()],
+    }
+
+
+@app.delete("/conversations/{conversation_id}", tags=["Conversations"], status_code=204)
+async def delete_conversation(
+    conversation_id: str         = Path(...),
+    db:              AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Conversation).where(Conversation.id == conversation_id))
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    await db.execute(sa_delete(Message).where(Message.conversation_id == conversation_id))
+    await db.execute(sa_delete(Conversation).where(Conversation.id == conversation_id))
+    await db.commit()
 
 
 ### ══════════════════════════════════════════════════════
@@ -474,10 +512,12 @@ async def cache_health():
     ),
 )
 async def research_stream_endpoint(
-    question: str = Query(..., description="Research question"),
-    ticker: str = Query("", description="Stock ticker, e.g. AAPL (optional — extracted from question if omitted)"),
-    request: Request = None,
-    db: AsyncSession = Depends(get_db),
+    question:        str           = Query(..., description="Research question"),
+    ticker:          str           = Query("", description="Stock ticker, e.g. AAPL (optional — extracted from question if omitted)"),
+    conversation_id: Optional[str] = Query(None, description="Existing conversation ID to resume, or omit to start a new one"),
+    session_id:      str           = Query("default", description="Browser session UUID"),
+    request:         Request       = None,
+    db:              AsyncSession  = Depends(get_db),
 ):
     """
     Streaming research endpoint using Server-Sent Events.
@@ -499,8 +539,11 @@ async def research_stream_endpoint(
         async for sse_event in research_stream(
             question=question,
             ticker=ticker,
-            db=db,                  # ← was db_pool, matches streaming.py param name
+            db=db,
             cache=_cache,
+            checkpointer=_checkpointer,
+            conversation_id=conversation_id,
+            session_id=session_id,
         ):
             if await request.is_disconnected():
                 logger.info(
