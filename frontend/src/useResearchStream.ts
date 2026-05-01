@@ -83,11 +83,8 @@ export function useResearchStream() {
             console.log(
               `[ingest] filings not ready for ${ticker} — polling every ${POLL_INTERVAL_MS / 1000}s`,
             );
-            setState((prev) =>
-              prev
-                ? { ...prev, ingestPending: true, ingestTicker: ticker }
-                : prev,
-            );
+            // ingestPending is already set atomically by applyEvent above —
+            // no separate setState needed here.
             pollRef.current = setInterval(async () => {
               try {
                 const res = await fetch(`/ingest/status/${ticker}`);
@@ -97,10 +94,13 @@ export function useResearchStream() {
                 if (data.status === "ready") {
                   console.log(`[ingest] ${ticker} filings ready — re-running research`);
                   stopPolling();
-                  setState((prev) =>
-                    prev ? { ...prev, ingestPending: false } : prev,
-                  );
-                  startFnRef.current(question, conversationId);
+                  // Read the resolved conversationId from current state so the
+                  // retry reuses the same conversation instead of creating a new one.
+                  setState((prev) => {
+                    const resolvedConvId = prev?.conversationId ?? conversationId ?? null;
+                    setTimeout(() => startFnRef.current(question, resolvedConvId), 0);
+                    return prev ? { ...prev, ingestPending: false } : prev;
+                  });
 
                 } else if (data.status === "ingesting") {
                   // Still running — reset the not-found streak and keep waiting
@@ -223,12 +223,17 @@ function applyEvent(state: ResearchState, event: SSEEvent): ResearchState {
     }
 
     case "done": {
+      const isIngestPending = Boolean(event.ingesting_ticker);
       return {
         ...state,
-        phase: "done",
+        // Keep phase as "streaming" while waiting for ingest — prevents the
+        // "Research complete" flash before ingestPending is set.
+        phase: isIngestPending ? "streaming" : "done",
+        ingestPending: isIngestPending,
+        ingestTicker: event.ingesting_ticker ?? state.ingestTicker,
         finalReport: event.report,
         citations: event.citations ?? [],
-        completedAt: Date.now(),
+        completedAt: isIngestPending ? 0 : Date.now(),
         conversationId: event.conversation_id ?? state.conversationId,
       };
     }

@@ -31,7 +31,8 @@ export function AgentTimeline({ research }: Props) {
   // For routes that bypass the synthesizer (e.g. compare), finalReport arrives via
   // the done event but synthesizer.tokens is empty — render it here directly.
   const synthTokens = nodes.synthesizer?.tokens ?? "";
-  const showFinalReport = phase === "done" && !ingestPending && finalReport && !synthTokens;
+  const showFinalReport =
+    phase === "done" && !ingestPending && finalReport && !synthTokens;
 
   return (
     <div style={styles.log}>
@@ -173,7 +174,10 @@ function useElapsed(
 
   useEffect(() => {
     if (!startedAt || completedAt) return;
-    const id = setInterval(() => setRunningElapsed(Date.now() - startedAt), 100);
+    const id = setInterval(
+      () => setRunningElapsed(Date.now() - startedAt),
+      100,
+    );
     return () => clearInterval(id);
   }, [startedAt, completedAt]);
 
@@ -252,8 +256,8 @@ function IngestPollingLine({ ticker }: { ticker: string }) {
       </div>
       <p style={styles.ingestBody}>
         {ticker.toUpperCase()} filings haven't been indexed yet. Indexing is
-        running in the background — your full analysis will start automatically
-        once it's ready (typically 1–3 minutes).
+        running in the background and your full analysis will start
+        automatically once it's ready (typically 1–3 minutes).
       </p>
     </div>
   );
@@ -290,12 +294,14 @@ function CitationsBlock({ citations }: { citations: Citation[] }) {
 const markdownComponents = {
   table: ({ children }: { children?: React.ReactNode }) => (
     <div style={{ overflowX: "auto", margin: "12px 0" }}>
-      <table style={{
-        borderCollapse: "collapse",
-        width: "100%",
-        fontSize: "13px",
-        lineHeight: "1.5",
-      }}>
+      <table
+        style={{
+          borderCollapse: "collapse",
+          width: "100%",
+          fontSize: "13px",
+          lineHeight: "1.5",
+        }}
+      >
         {children}
       </table>
     </div>
@@ -304,24 +310,28 @@ const markdownComponents = {
     <thead style={{ background: "#f3f4f6" }}>{children}</thead>
   ),
   th: ({ children }: { children?: React.ReactNode }) => (
-    <th style={{
-      padding: "8px 12px",
-      border: "1px solid #e5e7eb",
-      fontWeight: 600,
-      textAlign: "left",
-      color: "#111827",
-      whiteSpace: "nowrap",
-    }}>
+    <th
+      style={{
+        padding: "8px 12px",
+        border: "1px solid #e5e7eb",
+        fontWeight: 600,
+        textAlign: "left",
+        color: "#111827",
+        whiteSpace: "nowrap",
+      }}
+    >
       {children}
     </th>
   ),
   td: ({ children }: { children?: React.ReactNode }) => (
-    <td style={{
-      padding: "7px 12px",
-      border: "1px solid #e5e7eb",
-      color: "#374151",
-      verticalAlign: "top",
-    }}>
+    <td
+      style={{
+        padding: "7px 12px",
+        border: "1px solid #e5e7eb",
+        color: "#374151",
+        verticalAlign: "top",
+      }}
+    >
       {children}
     </td>
   ),
