@@ -12,10 +12,10 @@ from pathlib import Path
 
 import numpy as np
 
-from app.database import AsyncSessionLocal, Chunk
-from app.rag.chunker import chunk_filing
-from app.rag.embedder import embed_chunks, get_client
-from app.rag.ingest import ingest_filing, ingest_recent_filings
+from ..database import AsyncSessionLocal, Chunk
+from .chunker import chunk_filing
+from .embedder import embed_chunks, get_client
+from .ingest import ingest_filing, ingest_recent_filings
 
 logger = logging.getLogger(__name__)
 

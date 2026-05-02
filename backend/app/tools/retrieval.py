@@ -12,23 +12,14 @@ Ticker filtering is a native WHERE clause — no overfetch or post-filtering nee
 import logging
 from typing import Optional
 
-from openai import OpenAI
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import Chunk
-from app.rag.embedder import get_client, EMBEDDING_MODEL
+from ..database import Chunk
+from ..rag.embedder import EMBEDDING_MODEL, EMBEDDING_DIM
+from ..clients import get_openai_sync
 
 logger = logging.getLogger(__name__)
-
-_openai_client: OpenAI | None = None
-
-
-def _get_openai_client() -> OpenAI:
-    global _openai_client
-    if _openai_client is None:
-        _openai_client = get_client()
-    return _openai_client
 
 
 async def retrieve_chunks(
@@ -50,9 +41,7 @@ async def retrieve_chunks(
     Returns:
         List of dicts with text, ticker, year, section, score (0–1).
     """
-    from app.rag.embedder import EMBEDDING_DIM
-    client = _get_openai_client()
-    response = client.embeddings.create(model=EMBEDDING_MODEL, input=query, dimensions=EMBEDDING_DIM)
+    response = get_openai_sync().embeddings.create(model=EMBEDDING_MODEL, input=query, dimensions=EMBEDDING_DIM)
     query_vector = response.data[0].embedding
 
     distance_expr = Chunk.embedding.cosine_distance(query_vector)

@@ -1,11 +1,11 @@
 """
 embedder.py — Convert text chunks into vectors using OpenAI's embedding API
 
-Key concepts implemented here:
+Key concepts:
   1. Batching    — embed many chunks in one API call, not one-by-one
   2. Retry logic — embedding API can rate-limit; we back off and retry
-  3. Normalization — divide each vector by its length so cosine similarity
-                     works correctly with FAISS IndexFlatIP
+  3. Normalization — L2-normalize each vector so cosine similarity works
+                     correctly with pgvector's cosine_distance operator
 """
 
 import logging
@@ -17,10 +17,8 @@ from openai import OpenAI
 
 from app.rag.chunker import ChunkRecord
 from langsmith.wrappers import wrap_openai
-from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
-load_dotenv()
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -38,8 +36,8 @@ BATCH_SIZE   = 50    # reduce from 100 to 50 — smaller batches = less likely t
 
 def get_client() -> OpenAI:
     """
-    Returns an OpenAI client. Reads OPENAI_API_KEY from environment
-    automatically — no need to pass it explicitly.
+    Returns a new OpenAI client for use in ingest scripts and CLI tools.
+    Request-path code (retrieval.py) uses get_openai_sync() from app.clients instead.
     """
     return wrap_openai(OpenAI())
 
