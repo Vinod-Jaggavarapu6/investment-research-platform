@@ -46,7 +46,7 @@ def build_graph(
     g.add_node("filings_agent",  make_filings_node(db))
     g.add_node("news_agent",     make_news_node())
     g.add_node("synthesizer",    make_synthesizer_node(on_token))
-    g.add_node("compare_agent",  make_compare_node(db))
+    g.add_node("compare_agent",  make_compare_node(db, on_token))
 
     g.set_entry_point("router")
 

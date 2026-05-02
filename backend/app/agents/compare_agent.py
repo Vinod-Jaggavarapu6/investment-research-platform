@@ -11,6 +11,7 @@ Flow:
 import asyncio
 import logging
 import os
+from typing import Callable, Awaitable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -126,10 +127,11 @@ def _build_context(
 
 
 async def compare_companies(
-    question: str,
-    tickers:  list[str],
-    db:       AsyncSession,
-    k:        int = RETRIEVAL_K,
+    question:  str,
+    tickers:   list[str],
+    db:        AsyncSession,
+    k:         int = RETRIEVAL_K,
+    on_token:  Callable[[str], Awaitable[None]] | None = None,
 ) -> tuple[str, list[dict]]:
     """
     Run market data fetch + filing retrieval for each ticker in parallel, then call Claude.
@@ -172,7 +174,8 @@ async def compare_companies(
 
     tickers_str = " vs ".join(tickers)
 
-    response = await get_anthropic_async().messages.create(
+    chunks: list[str] = []
+    async with get_anthropic_async().messages.stream(
         model=MODEL,
         max_tokens=MAX_TOKENS,
         system=COMPARE_SYSTEM,
@@ -203,15 +206,19 @@ async def compare_companies(
                 ],
             }
         ],
-    )
+    ) as stream:
+        async for text in stream.text_stream:
+            chunks.append(text)
+            if on_token is not None:
+                await on_token(text)
 
-    answer = response.content[0].text
-    return answer, all_citations
+    return "".join(chunks), all_citations
 
 
-def make_compare_node(db: AsyncSession):
-    """Factory returning a LangGraph-compatible compare node with db in closure."""
-
+def make_compare_node(
+    db:       AsyncSession,
+    on_token: Callable[[str], Awaitable[None]] | None = None,
+):
     async def compare_node(state: AgentState) -> dict:
         tickers = state.get("tickers") or []
 
@@ -238,6 +245,7 @@ def make_compare_node(db: AsyncSession):
                 question=state["question"],
                 tickers=tickers,
                 db=db,
+                on_token=on_token,
             )
         except Exception as exc:
             return {**node_error("final_answer", "compare_agent", exc), "citations": []}
