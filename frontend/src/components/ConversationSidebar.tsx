@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Conversation } from "../types";
+import { colors } from "../theme";
 
 interface Props {
   conversations: Conversation[];
@@ -48,8 +49,12 @@ export function ConversationSidebar({
               key={conv.id}
               style={{
                 ...styles.item,
-                background: isActive ? "#f0f4ff" : hoveredId === conv.id ? "#f9fafb" : "transparent",
-                borderLeft: isActive ? "3px solid #6366f1" : "3px solid transparent",
+                background: isActive
+                  ? colors.brandActiveBg
+                  : hoveredId === conv.id
+                  ? colors.bgPage
+                  : "transparent",
+                borderLeft: `3px solid ${isActive ? colors.brand : "transparent"}`,
               }}
               onClick={() => onSelect(conv.id)}
               onMouseEnter={() => setHoveredId(conv.id)}
@@ -90,8 +95,8 @@ const styles: Record<string, React.CSSProperties> = {
   sidebar: {
     width: "260px",
     flexShrink: 0,
-    borderRight: "1px solid #e5e7eb",
-    background: "#fff",
+    borderRight: `1px solid ${colors.border}`,
+    background: colors.white,
     display: "flex",
     flexDirection: "column",
     overflowY: "auto",
@@ -101,27 +106,27 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: "center",
     justifyContent: "space-between",
     padding: "16px 14px 12px",
-    borderBottom: "1px solid #f3f4f6",
+    borderBottom: `1px solid ${colors.bgLight}`,
     position: "sticky",
     top: 0,
-    background: "#fff",
+    background: colors.white,
     zIndex: 1,
   },
   headerLabel: {
     fontSize: "12px",
     fontWeight: "600",
-    color: "#6b7280",
+    color: colors.textMuted,
     textTransform: "uppercase",
     letterSpacing: "0.05em",
   },
   newBtn: {
     fontSize: "12px",
     padding: "4px 10px",
-    border: "1px solid #d1d5db",
+    border: `1px solid ${colors.borderMuted}`,
     borderRadius: "5px",
-    background: "#fff",
+    background: colors.white,
     cursor: "pointer",
-    color: "#374151",
+    color: colors.textSecondary,
     fontFamily: "inherit",
   },
   list: {
@@ -130,7 +135,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   empty: {
     fontSize: "13px",
-    color: "#9ca3af",
+    color: colors.textFaint,
     textAlign: "center",
     marginTop: "24px",
   },
@@ -150,7 +155,7 @@ const styles: Record<string, React.CSSProperties> = {
     display: "block",
     fontSize: "13px",
     fontWeight: "500",
-    color: "#111827",
+    color: colors.textPrimary,
     whiteSpace: "nowrap",
     overflow: "hidden",
     textOverflow: "ellipsis",
@@ -164,20 +169,20 @@ const styles: Record<string, React.CSSProperties> = {
   ticker: {
     fontSize: "11px",
     fontWeight: "600",
-    color: "#6366f1",
-    background: "#eef2ff",
+    color: colors.brand,
+    background: colors.brandBg,
     padding: "1px 5px",
     borderRadius: "3px",
   },
   time: {
     fontSize: "11px",
-    color: "#9ca3af",
+    color: colors.textFaint,
   },
   deleteBtn: {
     background: "none",
     border: "none",
     cursor: "pointer",
-    color: "#9ca3af",
+    color: colors.textFaint,
     fontSize: "12px",
     padding: "2px 4px",
     borderRadius: "3px",
