@@ -225,7 +225,6 @@ async def research_stream(
                             derived_ticker,
                         )
 
-                # ── Frontend-visible node events ──────────────────────────────
                 if kind == "on_chain_start" and node in TRACKED_NODES:
                     if node not in nodes_started:
                         nodes_started.add(node)

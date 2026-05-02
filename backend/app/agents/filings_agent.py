@@ -17,12 +17,10 @@ import os
 from dataclasses import dataclass
 from langsmith import traceable
 
-from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.tools.retrieval import retrieve_chunks
-from langsmith.wrappers import wrap_openai
-
+from ..clients import get_openai_async
 from ..state import AgentState
 
 
@@ -127,8 +125,7 @@ async def _make_search_query(question: str, ticker: str | None) -> str:
     if not ticker:
         return question
 
-    client = wrap_openai(AsyncOpenAI())
-    response = await client.chat.completions.create(
+    response = await get_openai_async().chat.completions.create(
         model="gpt-4o-mini",
         max_completion_tokens=30,
         messages=[{
@@ -225,10 +222,8 @@ async def answer_filing_question(
     # ------------------------------------------------------------------
     # Step 3: Generate answer with OpenAI
     # ------------------------------------------------------------------
-    client = wrap_openai(AsyncOpenAI())
-
     logger.info("Generating answer with %s (recent_mode=%s)...", MODEL, recent_mode)
-    response = await client.chat.completions.create(
+    response = await get_openai_async().chat.completions.create(
         model=MODEL,
         max_completion_tokens=MAX_TOKENS,
         messages=[

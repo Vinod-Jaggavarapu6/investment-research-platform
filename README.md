@@ -8,7 +8,7 @@ An AI-powered investment research platform that combines multi-agent orchestrati
 
 ## Architecture
 
-```
+````
                               ┌─────────────────────────┐
                               │     React Frontend      │
                               │  Conversation Sidebar   │
@@ -70,7 +70,7 @@ An AI-powered investment research platform that combines multi-agent orchestrati
            │  + conversations    │    │                     │  │                    │
            │  + messages         │    │                     │  │                    │
            └─────────────────────┘    └─────────────────────┘  └────────────────────┘
-```
+<!-- ```
 
 ---
 
@@ -156,26 +156,28 @@ Full research reports are cached per `(ticker, question)` with TTL. Cache hits b
 
 ## Multi-Turn Flow
 
-```
+````
+
 User: "What is Meta's gross margin trend?"
-  → Router: ticker=META, route=filings
-  → Filings Agent: search_query="META gross margin trend" → retrieves chunks
-  → Synthesizer: generates report with citations
-  → Persisted to DB: conversation row + user message + assistant message
+→ Router: ticker=META, route=filings
+→ Filings Agent: search_query="META gross margin trend" → retrieves chunks
+→ Synthesizer: generates report with citations
+→ Persisted to DB: conversation row + user message + assistant message
 
 User: "What's driving that improvement?"
-  → stream start: loads prior 2 messages from DB → injected into AgentState.messages
-  → Router: reads prev_ticker=META from checkpoint → injects context hint → ticker=META
-  → Filings Agent: rewrites "What's driving that improvement?" → "META gross margin improvement drivers"
-                   → retrieves relevant chunks
-  → Synthesizer: receives [prior Q, prior A, current research] → answers with full context
-  → Persisted to DB: 2 new messages appended to same conversation
+→ stream start: loads prior 2 messages from DB → injected into AgentState.messages
+→ Router: reads prev_ticker=META from checkpoint → injects context hint → ticker=META
+→ Filings Agent: rewrites "What's driving that improvement?" → "META gross margin improvement drivers"
+→ retrieves relevant chunks
+→ Synthesizer: receives [prior Q, prior A, current research] → answers with full context
+→ Persisted to DB: 2 new messages appended to same conversation
 
 User: "Can you elaborate on the R&D section?"
-  → stream start: loads prior 4 messages (2 Q&A pairs) → injected into AgentState.messages
-  → Synthesizer: sees prior answers, knows exactly what the R&D section contained
-                 → elaborates coherently without starting from scratch
-```
+→ stream start: loads prior 4 messages (2 Q&A pairs) → injected into AgentState.messages
+→ Synthesizer: sees prior answers, knows exactly what the R&D section contained
+→ elaborates coherently without starting from scratch
+
+````-->
 
 <!--
 ## Project Structure
@@ -235,7 +237,7 @@ investment-research/
 │   ├── Dockerfile
 │   └── vite.config.ts
 └── docker-compose.yml                # 4-service stack: backend, frontend, postgres, redis
-```
+````
 
 ---
 
@@ -257,16 +259,16 @@ messages      (id, conversation_id → CASCADE, role, content, created_at)
 
 ## API Endpoints
 
-| Method   | Path                              | Description                              |
-| -------- | --------------------------------- | ---------------------------------------- |
-| `GET`    | `/research/stream`                | SSE stream: question + optional conv ID  |
-| `GET`    | `/conversations`                  | List conversations for a session         |
-| `POST`   | `/conversations`                  | Create a conversation manually           |
-| `GET`    | `/conversations/{id}/messages`    | Load full message history                |
-| `DELETE` | `/conversations/{id}`             | Delete conversation and all messages     |
-| `POST`   | `/ingest/{ticker}`                | Trigger background SEC filing ingest     |
-| `GET`    | `/ingest/status/{ticker}`         | Poll ingest job status                   |
-| `GET`    | `/news/{ticker}`                  | Fetch recent headlines                   |
+| Method   | Path                           | Description                             |
+| -------- | ------------------------------ | --------------------------------------- |
+| `GET`    | `/research/stream`             | SSE stream: question + optional conv ID |
+| `GET`    | `/conversations`               | List conversations for a session        |
+| `POST`   | `/conversations`               | Create a conversation manually          |
+| `GET`    | `/conversations/{id}/messages` | Load full message history               |
+| `DELETE` | `/conversations/{id}`          | Delete conversation and all messages    |
+| `POST`   | `/ingest/{ticker}`             | Trigger background SEC filing ingest    |
+| `GET`    | `/ingest/status/{ticker}`      | Poll ingest job status                  |
+| `GET`    | `/news/{ticker}`               | Fetch recent headlines                  |
 
 ---
 

@@ -8,9 +8,6 @@ load_dotenv()
 
 client = wrap_anthropic(Anthropic())
 
-
-# client = Anthropic()
-
 RESPONSE_LOG = "responses.json"
 
 def log_response(iteration: int, response):

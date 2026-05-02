@@ -20,6 +20,8 @@ from sqlalchemy import select, delete as sa_delete, update as sa_update
 from app.agents.financial_agent import analyze_ticker
 from app.agents.filings_agent import answer_filing_question
 from app.database import create_tables, get_db, get_checkpointer_url, Conversation, Message
+
+
 from app.models import (
     AnalysisRequest, AnalysisResponse,
     FilingsRequest,
@@ -27,10 +29,14 @@ from app.models import (
     ResearchRequest, ResearchResponse,
     ConversationResponse, MessageResponse,
 )
+
 from app.streaming import research_stream
 from app.tools.retrieval import retrieve_chunks, format_retrieval_response, ticker_has_data
 from app.rag.background_ingest import is_ingesting, trigger_ingest
 from app.cache.redis_client import ResearchCacheClient, RedisConfig
+from app.clients import init_clients
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
@@ -52,6 +58,9 @@ async def lifespan(app: FastAPI):
     logger.info("=== Investment Research Platform — Phase 3 starting ===")
     logger.info(f"ANTHROPIC_API_KEY set: {bool(os.getenv('ANTHROPIC_API_KEY'))}")
     logger.info(f"OPENAI_API_KEY set:    {bool(os.getenv('OPENAI_API_KEY'))}")
+
+    init_clients()
+    logger.info("LLM clients initialized")
 
     await create_tables()
 
@@ -420,10 +429,6 @@ async def delete_conversation(
     await db.execute(sa_delete(Conversation).where(Conversation.id == conversation_id))
     await db.commit()
 
-
-### ══════════════════════════════════════════════════════
-### Cache debug endpoints
-### ══════════════════════════════════════════════════════
 
 @app.get("/cache/debug", tags=["Cache"], summary="Inspect a cache entry")
 async def cache_debug_get(

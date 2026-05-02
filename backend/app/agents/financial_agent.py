@@ -7,9 +7,8 @@ import os
 import time
 
 import openai
-from dotenv import load_dotenv
-from langsmith.wrappers import wrap_openai
 
+from ..clients import get_openai_sync
 from ..state import AgentState
 
 from app.models import (
@@ -22,10 +21,6 @@ from app.models import (
 from app.tools.market_data import fetch_financial_data
 
 logger = logging.getLogger(__name__)
-
-load_dotenv()
-
-client = wrap_openai(openai.OpenAI())
 
 MODEL      = os.getenv("FINANCIAL_AGENT_MODEL", "gpt-4o")
 MAX_TOKENS = int(os.getenv("FINANCIAL_AGENT_MAX_TOKENS", "1500"))
@@ -206,10 +201,6 @@ def _format_for_prompt(raw: RawFinancialData) -> str:
     return "\n".join(lines)
 
 
-# ─────────────────────────────────────────────
-# HELPER: parse OpenAI tool call → FinancialSnapshot
-# ─────────────────────────────────────────────
-
 def _parse_tool_call(response, raw: RawFinancialData) -> FinancialSnapshot:
     tool_calls = (response.choices[0].message.tool_calls or []) if response.choices else []
     for tc in tool_calls:
@@ -248,15 +239,10 @@ def _parse_tool_call(response, raw: RawFinancialData) -> FinancialSnapshot:
     )
 
 
-# ─────────────────────────────────────────────
-# THE AGENT — public entry point
-# ─────────────────────────────────────────────
-
 def analyze_ticker(ticker: str, include_raw: bool = False) -> AnalysisResponse:
     start  = time.perf_counter()
     ticker = ticker.upper().strip()
 
-    # ── Step A: Fetch raw data ──────────────────────────────────────────
     try:
         raw = fetch_financial_data(ticker)
         logger.info(f"[{ticker}] raw data fetched — {len(raw.fetch_errors)} warnings")
@@ -270,16 +256,14 @@ def analyze_ticker(ticker: str, include_raw: bool = False) -> AnalysisResponse:
             duration_ms=_elapsed(start),
         )
 
-    # ── Step B: Build the prompt ────────────────────────────────────────
     user_message = (
         f"Analyze the following financial data for {ticker} "
         f"and call submit_analysis with your structured assessment.\n\n"
         f"{_format_for_prompt(raw)}"
     )
 
-    # ── Step C: Call OpenAI ─────────────────────────────────────────────
     try:
-        response = client.chat.completions.create(
+        response = get_openai_sync().chat.completions.create(
             model=MODEL,
             max_completion_tokens=MAX_TOKENS,
             messages=[
@@ -308,7 +292,6 @@ def analyze_ticker(ticker: str, include_raw: bool = False) -> AnalysisResponse:
             success=False, error=f"OpenAI API error {e.status_code}: {e.message}", duration_ms=_elapsed(start),
         )
 
-    # ── Step D: Parse tool call → FinancialSnapshot ─────────────────────
     try:
         snapshot = _parse_tool_call(response, raw)
     except (RuntimeError, KeyError, ValueError) as e:

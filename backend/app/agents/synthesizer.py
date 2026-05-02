@@ -1,8 +1,7 @@
 import os
 
-import anthropic
-from langsmith.wrappers import wrap_anthropic
 from typing import Callable, Awaitable
+from ..clients import get_anthropic_async
 from ..state import AgentState
 
 MODEL      = os.getenv("SYNTHESIZER_MODEL", "claude-sonnet-4-6")
@@ -91,27 +90,18 @@ def make_synthesizer_node(
             ],
         })
 
-        client = wrap_anthropic(anthropic.AsyncAnthropic())
         chunks: list[str] = []
-        async with client.messages.stream(
+        async with get_anthropic_async().messages.stream(
             model=MODEL,
             max_tokens=MAX_TOKENS,
             system=SYNTH_SYSTEM,
-            messages=messages,
+            messages=messages
         ) as stream:
             async for text in stream.text_stream:
                 chunks.append(text)
                 if on_token is not None:
                     await on_token(text)
 
-        final = await stream.get_final_message()
-        u = final.usage
-        print(
-            f"[SYNTH CACHE] "
-            f"created_1h={u.cache_creation.ephemeral_1h_input_tokens} "
-            f"read={u.cache_read_input_tokens} uncached={u.input_tokens}",
-            flush=True,
-        )
         return {"final_answer": "".join(chunks)}
 
     return synthesizer_node

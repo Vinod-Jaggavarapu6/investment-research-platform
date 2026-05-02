@@ -1,10 +1,8 @@
 import json
 import os
 from ..state import AgentState
-from langsmith.wrappers import wrap_openai
-from openai import AsyncOpenAI
+from ..clients import get_openai_async
 
-client = wrap_openai(AsyncOpenAI())
 MODEL = os.getenv("ROUTER_AGENT_MODEL", "gpt-4o-mini")
 
 ROUTER_SYSTEM = """You are a question classifier for a financial research platform.
@@ -70,7 +68,7 @@ async def router_node(state: AgentState) -> dict:
             f"was about {prev_ticker}]\n\n{state['question']}"
         )
 
-    response = await client.chat.completions.create(
+    response = await get_openai_async().chat.completions.create(
         model=MODEL,
         max_completion_tokens=100,
         messages=[
@@ -80,7 +78,6 @@ async def router_node(state: AgentState) -> dict:
     )
 
     raw = response.choices[0].message.content.strip()
-    print(f"[ROUTER DEBUG] raw LLM output: {raw!r}", flush=True)
 
     if raw.startswith("```"):
         raw = raw.split("```")[1]
@@ -117,8 +114,6 @@ async def router_node(state: AgentState) -> dict:
         route   = "both"
         ticker  = None
         tickers = None
-
-    print(f"[ROUTER DEBUG] returning route={route!r} ticker={ticker!r} tickers={tickers!r}", flush=True)
 
     return {
         "route":          route,

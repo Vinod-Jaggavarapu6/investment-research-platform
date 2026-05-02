@@ -12,13 +12,12 @@ import asyncio
 import logging
 import os
 
-import anthropic
-from langsmith.wrappers import wrap_anthropic
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.tools.retrieval import retrieve_chunks
 from app.tools.market_data import fetch_financial_data
 from .financial_agent import _format_for_prompt
+from ..clients import get_anthropic_async
 from ..state import AgentState
 
 logger = logging.getLogger(__name__)
@@ -172,8 +171,7 @@ async def compare_companies(
 
     tickers_str = " vs ".join(tickers)
 
-    client = wrap_anthropic(anthropic.AsyncAnthropic())
-    response = await client.messages.create(
+    response = await get_anthropic_async().messages.create(
         model=MODEL,
         max_tokens=MAX_TOKENS,
         system=COMPARE_SYSTEM,

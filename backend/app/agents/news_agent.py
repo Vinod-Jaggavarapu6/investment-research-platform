@@ -15,7 +15,6 @@ import time
 from datetime import datetime
 
 import openai
-from langsmith.wrappers import wrap_openai
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.models import (
@@ -27,11 +26,11 @@ from app.models import (
 )
 from app.tools.news_data import fetch_news
 from app.agents.financial_agent import _elapsed
+from ..clients import get_openai_sync
 from ..state import AgentState
 
 logger = logging.getLogger(__name__)
 
-client         = wrap_openai(openai.OpenAI())
 MODEL          = os.getenv("NEWS_AGENT_MODEL", "gpt-4o-mini")
 NEWS_MAX_TOKENS = int(os.getenv("NEWS_AGENT_MAX_TOKENS", "2000"))
 NEWS_DAYS       = int(os.getenv("NEWS_DAYS_LOOKBACK", "7"))
@@ -152,7 +151,7 @@ def _score_batch(
 ) -> tuple[list[dict], list[str], list[str], str]:
     formatted = _format_articles_for_prompt(articles)
 
-    response = client.chat.completions.create(
+    response = get_openai_sync().chat.completions.create(
         model=MODEL,
         max_completion_tokens=NEWS_MAX_TOKENS,
         messages=[
