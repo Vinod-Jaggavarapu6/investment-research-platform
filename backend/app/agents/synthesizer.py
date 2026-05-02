@@ -3,6 +3,7 @@ import os
 from typing import Callable, Awaitable
 from ..clients import get_anthropic_async
 from ..state import AgentState
+from .base import node_error
 
 MODEL      = os.getenv("SYNTHESIZER_MODEL", "claude-sonnet-4-6")
 MAX_TOKENS = int(os.getenv("SYNTHESIZER_MAX_TOKENS", "2048"))
@@ -60,48 +61,52 @@ def make_synthesizer_node(
               None for the non-streaming POST /research path.
     """
     async def synthesizer_node(state: AgentState) -> dict:
-        parts = []
-        if state.get("market_output"):
-            parts.append(f"## Live Market Data\n{state['market_output']}")
-        if state.get("filings_output"):
-            parts.append(f"## SEC Filing Research\n{state['filings_output']}")
-        if state.get("news_output"):
-            parts.append(f"## Recent News Sentiment\n{state['news_output']}")
+        try:
+            parts = []
+            if state.get("market_output"):
+                parts.append(f"## Live Market Data\n{state['market_output']}")
+            if state.get("filings_output"):
+                parts.append(f"## SEC Filing Research\n{state['filings_output']}")
+            if state.get("news_output"):
+                parts.append(f"## Recent News Sentiment\n{state['news_output']}")
 
-        combined = "\n\n".join(parts)
+            combined = "\n\n".join(parts)
 
-        # Build messages: prepend prior Q&A turns so the model can resolve
-        # follow-up references ("that figure", "elaborate on point 3", etc.)
-        prior = state.get("messages") or []
-        messages = [{"role": m["role"], "content": m["content"]} for m in prior]
-        messages.append({
-            "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    # Cache the research data — the expensive prefix that repeats across calls
-                    "text": f"Research collected:\n{combined}",
-                    "cache_control": {"type": "ephemeral"},
-                },
-                {
-                    "type": "text",
-                    "text": f"\nQuestion: {state['question']}\n\nSynthesize a final answer.",
-                },
-            ],
-        })
+            # Build messages: prepend prior Q&A turns so the model can resolve
+            # follow-up references ("that figure", "elaborate on point 3", etc.)
+            prior = state.get("messages") or []
+            messages = [{"role": m["role"], "content": m["content"]} for m in prior]
+            messages.append({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        # Cache the research data — the expensive prefix that repeats across calls
+                        "text": f"Research collected:\n{combined}",
+                        "cache_control": {"type": "ephemeral"},
+                    },
+                    {
+                        "type": "text",
+                        "text": f"\nQuestion: {state['question']}\n\nSynthesize a final answer.",
+                    },
+                ],
+            })
 
-        chunks: list[str] = []
-        async with get_anthropic_async().messages.stream(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
-            system=SYNTH_SYSTEM,
-            messages=messages
-        ) as stream:
-            async for text in stream.text_stream:
-                chunks.append(text)
-                if on_token is not None:
-                    await on_token(text)
+            chunks: list[str] = []
+            async with get_anthropic_async().messages.stream(
+                model=MODEL,
+                max_tokens=MAX_TOKENS,
+                system=SYNTH_SYSTEM,
+                messages=messages
+            ) as stream:
+                async for text in stream.text_stream:
+                    chunks.append(text)
+                    if on_token is not None:
+                        await on_token(text)
 
-        return {"final_answer": "".join(chunks)}
+            return {"final_answer": "".join(chunks)}
+
+        except Exception as exc:
+            return node_error("final_answer", "synthesizer", exc)
 
     return synthesizer_node

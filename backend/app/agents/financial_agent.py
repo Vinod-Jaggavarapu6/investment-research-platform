@@ -10,6 +10,7 @@ import openai
 
 from ..clients import get_openai_sync
 from ..state import AgentState
+from .base import node_error
 
 from app.models import (
     AnalysisResponse,
@@ -319,17 +320,21 @@ def _elapsed(start: float) -> float:
 
 def make_market_node():
     async def market_node(state: AgentState) -> dict:
-        ticker = state.get("ticker")
+        try:
+            ticker = state.get("ticker")
 
-        if not ticker:
-            return {"market_output": "No ticker specified — cannot fetch market data."}
+            if not ticker:
+                return {"market_output": "No ticker specified — cannot fetch market data."}
 
-        loop   = asyncio.get_running_loop()
-        result = await loop.run_in_executor(None, analyze_ticker, ticker, False)
+            loop   = asyncio.get_running_loop()
+            result = await loop.run_in_executor(None, analyze_ticker, ticker, False)
 
-        if not result.success:
-            return {"market_output": f"Market data fetch failed: {result.error}"}
+            if not result.success:
+                return {"market_output": f"Market data unavailable: {result.error}"}
 
-        return {"market_output": result.model_dump_json(indent=2)}
+            return {"market_output": result.model_dump_json(indent=2)}
+
+        except Exception as exc:
+            return node_error("market_output", "market_agent", exc)
 
     return market_node

@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -8,34 +7,62 @@ from typing import AsyncGenerator, Any
 from app.graph import build_graph
 from app.state import AgentState
 from app.cache.cache_keys import full_report_key, CACHE_TTL
+from app.sse_types import (
+    CitationOut,
+    NodeStartEvent,
+    NodeCompleteEvent,
+    TokenEvent,
+    DoneEvent,
+    ConversationReadyEvent,
+    ErrorEvent,
+)
 
 
 logger = logging.getLogger(__name__)
 
 # Nodes forwarded to the frontend as SSE node_start / node_complete events.
-# data_preflight is intentionally excluded — it's an internal gate, not a
-# user-visible step. We capture its output separately via PREFLIGHT_NODE.
-TRACKED_NODES = {"router", "cache_check", "market_agent", "filings_agent", "news_agent", "synthesizer", "compare_agent"}
+# Internal nodes (data_preflight, cache_check) are intentionally excluded —
+# they are implementation details, not user-visible pipeline steps.
+TRACKED_NODES = {"router", "market_agent", "filings_agent", "news_agent", "synthesizer", "compare_agent"}
 PREFLIGHT_NODE = "data_preflight"
 
 
-def _event(type_: str, **kwargs) -> dict:
-    return {"data": json.dumps({"type": type_, **kwargs})}
+def _sse(model) -> dict:
+    return {"data": model.model_dump_json()}
 
-def node_start_event(node: str)              -> dict: return _event("node_start", node=node)
-def node_complete_event(node: str, data: Any)-> dict: return _event("node_complete", node=node, data=data)
-def token_event(text: str)                   -> dict: return _event("token", text=text)
-def error_event(message: str)                -> dict: return _event("error", message=message)
+def node_start_event(node: str) -> dict:
+    return _sse(NodeStartEvent(node=node))
+
+def node_complete_event(node: str, data: Any) -> dict:
+    return _sse(NodeCompleteEvent(node=node, data=data))
+
+def token_event(text: str) -> dict:
+    return _sse(TokenEvent(text=text))
+
+def error_event(message: str) -> dict:
+    return _sse(ErrorEvent(message=message))
+
 def done_event(
     report: Any,
     ingesting_ticker: str | None = None,
     citations: list | None = None,
     conversation_id: str | None = None,
 ) -> dict:
-    return _event("done", report=report, ingesting_ticker=ingesting_ticker, citations=citations or [], conversation_id=conversation_id)
+    validated_citations = []
+    for c in (citations or []):
+        try:
+            validated_citations.append(CitationOut.model_validate(c))
+        except Exception:
+            logger.warning("[stream] citation failed validation, skipping: %r", c)
+    return _sse(DoneEvent(
+        report=report,
+        ingesting_ticker=ingesting_ticker,
+        citations=validated_citations,
+        conversation_id=conversation_id,
+    ))
 
 def conversation_ready_event(conversation_id: str) -> dict:
-    return _event("conversation_ready", conversation_id=conversation_id)
+    return _sse(ConversationReadyEvent(conversation_id=conversation_id))
 
 
 def _extract_node_output(node: str, output: Any) -> dict:

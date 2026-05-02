@@ -19,6 +19,7 @@ from app.tools.market_data import fetch_financial_data
 from .financial_agent import _format_for_prompt
 from ..clients import get_anthropic_async
 from ..state import AgentState
+from .base import node_error
 
 logger = logging.getLogger(__name__)
 
@@ -232,11 +233,14 @@ def make_compare_node(db: AsyncSession):
             "[compare] tickers=%r question=%r", tickers, state["question"][:60]
         )
 
-        answer, citations = await compare_companies(
-            question=state["question"],
-            tickers=tickers,
-            db=db,
-        )
+        try:
+            answer, citations = await compare_companies(
+                question=state["question"],
+                tickers=tickers,
+                db=db,
+            )
+        except Exception as exc:
+            return {**node_error("final_answer", "compare_agent", exc), "citations": []}
 
         logger.info(
             "[compare] done tickers=%r answer_len=%d citations=%d",

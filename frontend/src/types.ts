@@ -30,7 +30,8 @@ export type NodeName =
 // Per-node status in the UI
 export type NodeStatus = "queued" | "running" | "done" | "error";
 
-// A single SEC filing source returned by the filings agent
+// A single SEC filing source returned by the filings agent.
+// MUST stay in sync with CitationOut in backend/app/sse_types.py.
 export interface Citation {
   ticker: string;
   year: number;
@@ -40,7 +41,8 @@ export interface Citation {
   text: string;
 }
 
-// SSE event shapes from the backend
+// SSE event shapes emitted by the backend streaming pipeline.
+// MUST stay in sync with the models in backend/app/sse_types.py.
 export type SSEEvent =
   | { type: "node_start"; node: NodeName }
   | { type: "node_complete"; node: NodeName; data: Record<string, unknown> }

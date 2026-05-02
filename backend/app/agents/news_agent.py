@@ -28,6 +28,7 @@ from app.tools.news_data import fetch_news
 from app.agents.financial_agent import _elapsed
 from ..clients import get_openai_sync
 from ..state import AgentState
+from .base import node_error
 
 logger = logging.getLogger(__name__)
 
@@ -340,20 +341,22 @@ def analyze_news_sentiment(
 # ---------------------------------------------------------------------------
 
 def make_news_node():
-    import asyncio
-
     async def news_node(state: AgentState) -> dict:
-        ticker = state.get("ticker")
+        try:
+            ticker = state.get("ticker")
 
-        if not ticker:
-            return {"news_output": "No ticker specified — cannot fetch news sentiment."}
+            if not ticker:
+                return {"news_output": "No ticker specified — cannot fetch news sentiment."}
 
-        loop   = asyncio.get_running_loop()
-        result = await loop.run_in_executor(None, analyze_news_sentiment, ticker, NEWS_DAYS)
+            loop   = asyncio.get_running_loop()
+            result = await loop.run_in_executor(None, analyze_news_sentiment, ticker, NEWS_DAYS)
 
-        if not result.success:
-            return {"news_output": f"News sentiment fetch failed: {result.error}"}
+            if not result.success:
+                return {"news_output": f"News sentiment unavailable: {result.error}"}
 
-        return {"news_output": result.sentiment.model_dump_json(indent=2)}
+            return {"news_output": result.sentiment.model_dump_json(indent=2)}
+
+        except Exception as exc:
+            return node_error("news_output", "news_agent", exc)
 
     return news_node

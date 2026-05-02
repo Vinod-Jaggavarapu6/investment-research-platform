@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.tools.retrieval import retrieve_chunks
 from ..clients import get_openai_async
 from ..state import AgentState
+from .base import node_error
 
 
 logger = logging.getLogger(__name__)
@@ -244,21 +245,25 @@ async def answer_filing_question(
 def make_filings_node(db: AsyncSession):
     """Factory that returns a filings_node with db captured in closure."""
     async def filings_node(state: AgentState) -> dict:
-        route       = state.get("route", "")
-        is_recent   = route == "filings_recent"
-        filing_types = ["10-Q", "8-K"] if is_recent else None
-        k            = RETRIEVAL_K_RECENT if is_recent else RETRIEVAL_K
+        try:
+            route        = state.get("route", "")
+            is_recent    = route == "filings_recent"
+            filing_types = ["10-Q", "8-K"] if is_recent else None
+            k            = RETRIEVAL_K_RECENT if is_recent else RETRIEVAL_K
 
-        result = await answer_filing_question(
-            question=state["question"],
-            db=db,
-            ticker=state.get("ticker"),
-            k=k,
-            filing_types=filing_types,
-            recent_mode=is_recent,
-        )
-        return {
-            "filings_output": result.answer,
-            "citations":      result.sources,
-        }
+            result = await answer_filing_question(
+                question=state["question"],
+                db=db,
+                ticker=state.get("ticker"),
+                k=k,
+                filing_types=filing_types,
+                recent_mode=is_recent,
+            )
+            return {
+                "filings_output": result.answer,
+                "citations":      result.sources,
+            }
+        except Exception as exc:
+            return {**node_error("filings_output", "filings_agent", exc), "citations": []}
+
     return filings_node
