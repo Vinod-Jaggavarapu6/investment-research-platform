@@ -16,13 +16,9 @@ from pgvector.sqlalchemy import Vector
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-# ---------------------------------------------------------------------------
-# Engine — one connection pool shared across the entire app
-# ---------------------------------------------------------------------------
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
@@ -47,11 +43,6 @@ async def get_db():
     """FastAPI dependency — yields a session, closes it after the request."""
     async with AsyncSessionLocal() as session:
         yield session
-
-
-# ---------------------------------------------------------------------------
-# ORM base + Chunk model
-# ---------------------------------------------------------------------------
 
 class Base(DeclarativeBase):
     pass
@@ -102,29 +93,7 @@ async def create_tables():
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
-        # Inline migration: add embedding column if upgrading from FAISS schema
-        await conn.execute(text("""
-            DO $$ BEGIN
-                IF EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name='chunks' AND column_name='faiss_index'
-                ) THEN
-                    ALTER TABLE chunks DROP COLUMN faiss_index;
-                END IF;
-                IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name='chunks' AND column_name='embedding'
-                ) THEN
-                    ALTER TABLE chunks ADD COLUMN embedding vector(1536);
-                END IF;
-                IF NOT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name='chunks' AND column_name='filing_type'
-                ) THEN
-                    ALTER TABLE chunks ADD COLUMN filing_type VARCHAR(10) NOT NULL DEFAULT '10-K';
-                END IF;
-            END $$;
-        """))
+        
         await conn.execute(text("""
             CREATE INDEX IF NOT EXISTS chunks_embedding_hnsw
             ON chunks USING hnsw (embedding vector_cosine_ops)
