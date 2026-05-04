@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import os
 import time
 
 import openai
+import structlog
 
 from ..clients import get_openai_sync
+from ..metrics import llm_tokens_total
 from ..state import AgentState
 from .base import node_error
 
@@ -21,7 +22,7 @@ from app.models import (
 )
 from app.tools.market_data import fetch_financial_data
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 MODEL      = os.getenv("FINANCIAL_AGENT_MODEL", "gpt-4o")
 MAX_TOKENS = int(os.getenv("FINANCIAL_AGENT_MAX_TOKENS", "1500"))
@@ -246,11 +247,11 @@ def analyze_ticker(ticker: str, include_raw: bool = False) -> AnalysisResponse:
 
     try:
         raw = fetch_financial_data(ticker)
-        logger.info(f"[{ticker}] raw data fetched — {len(raw.fetch_errors)} warnings")
+        logger.info("market_agent.data_fetched", ticker=ticker, fetch_warnings=len(raw.fetch_errors))
     except ValueError as e:
         return AnalysisResponse(success=False, error=str(e), duration_ms=_elapsed(start))
     except Exception as e:
-        logger.exception(f"[{ticker}] unexpected fetch error")
+        logger.exception("market_agent.fetch_failed", ticker=ticker)
         return AnalysisResponse(
             success=False,
             error=f"Data fetch failed: {str(e)[:300]}",
@@ -275,11 +276,15 @@ def analyze_ticker(ticker: str, include_raw: bool = False) -> AnalysisResponse:
             tool_choice={"type": "function", "function": {"name": "submit_analysis"}},
         )
         logger.info(
-            f"[{ticker}] LLM done — "
-            f"finish_reason={response.choices[0].finish_reason} "
-            f"in={response.usage.prompt_tokens}tok "
-            f"out={response.usage.completion_tokens}tok"
+            "market_agent.llm_done",
+            ticker=ticker,
+            finish_reason=response.choices[0].finish_reason,
+            tokens_in=response.usage.prompt_tokens,
+            tokens_out=response.usage.completion_tokens,
+            model=MODEL,
         )
+        llm_tokens_total.labels(model=MODEL, token_type="input").inc(response.usage.prompt_tokens)
+        llm_tokens_total.labels(model=MODEL, token_type="output").inc(response.usage.completion_tokens)
     except openai.APIConnectionError as e:
         return AnalysisResponse(
             success=False, error=f"Could not reach OpenAI API: {e}", duration_ms=_elapsed(start),
@@ -296,7 +301,7 @@ def analyze_ticker(ticker: str, include_raw: bool = False) -> AnalysisResponse:
     try:
         snapshot = _parse_tool_call(response, raw)
     except (RuntimeError, KeyError, ValueError) as e:
-        logger.exception(f"[{ticker}] failed to parse LLM output")
+        logger.exception("market_agent.parse_failed", ticker=ticker)
         return AnalysisResponse(
             success=False,
             error=f"Failed to parse LLM output: {str(e)[:300]}",
@@ -304,7 +309,7 @@ def analyze_ticker(ticker: str, include_raw: bool = False) -> AnalysisResponse:
         )
 
     elapsed = _elapsed(start)
-    logger.info(f"[{ticker}] complete in {elapsed}ms — signal={snapshot.signal.value}")
+    logger.info("market_agent.completed", ticker=ticker, signal=snapshot.signal.value, duration_ms=elapsed)
 
     return AnalysisResponse(
         success=True,

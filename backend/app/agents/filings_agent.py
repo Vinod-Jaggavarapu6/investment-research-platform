@@ -12,20 +12,21 @@ Routes:
   filings_recent → 10-Q/8-K only, higher K, recent-focused prompt
 """
 
-import logging
 import os
 from dataclasses import dataclass
 from langsmith import traceable
 
+import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.tools.retrieval import retrieve_chunks
 from ..clients import get_openai_async
+from ..metrics import llm_tokens_total
 from ..state import AgentState
 from .base import node_error
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Config
@@ -126,8 +127,9 @@ async def _make_search_query(question: str, ticker: str | None) -> str:
     if not ticker:
         return question
 
+    rewriter_model = "gpt-4o-mini"
     response = await get_openai_async().chat.completions.create(
-        model="gpt-4o-mini",
+        model=rewriter_model,
         max_completion_tokens=30,
         messages=[{
             "role": "user",
@@ -141,6 +143,9 @@ async def _make_search_query(question: str, ticker: str | None) -> str:
             ),
         }],
     )
+    if response.usage:
+        llm_tokens_total.labels(model=rewriter_model, token_type="input").inc(response.usage.prompt_tokens)
+        llm_tokens_total.labels(model=rewriter_model, token_type="output").inc(response.usage.completion_tokens)
     return response.choices[0].message.content.strip()
 
 
@@ -172,8 +177,12 @@ async def answer_filing_question(
     # ------------------------------------------------------------------
     search_query = await _make_search_query(question, ticker)
     logger.info(
-        "Retrieving chunks: original=%r search_query=%r ticker=%r filing_types=%r k=%d",
-        question, search_query, ticker, filing_types, k,
+        "filings_agent.retrieving",
+        ticker=ticker,
+        search_query=search_query,
+        filing_types=filing_types,
+        k=k,
+        recent_mode=recent_mode,
     )
     chunks = await retrieve_chunks(
         query=search_query,
@@ -184,6 +193,7 @@ async def answer_filing_question(
     )
 
     if not chunks:
+        logger.info("filings_agent.no_chunks", ticker=ticker, recent_mode=recent_mode)
         msg = (
             "No recent quarterly or event filings (10-Q/8-K) were found for this company. "
             "Try asking about annual filings instead."
@@ -192,7 +202,7 @@ async def answer_filing_question(
         )
         return FilingsAnswer(question=question, answer=msg, ticker=ticker, sources=[], model=MODEL)
 
-    logger.info("Retrieved %d chunks. Top score: %.3f", len(chunks), chunks[0]["score"])
+    logger.info("filings_agent.chunks_retrieved", ticker=ticker, chunk_count=len(chunks), top_score=round(chunks[0]["score"], 3))
 
     # ------------------------------------------------------------------
     # Step 2: Build prompt
@@ -223,7 +233,7 @@ async def answer_filing_question(
     # ------------------------------------------------------------------
     # Step 3: Generate answer with OpenAI
     # ------------------------------------------------------------------
-    logger.info("Generating answer with %s (recent_mode=%s)...", MODEL, recent_mode)
+    logger.info("filings_agent.generating", ticker=ticker, model=MODEL, recent_mode=recent_mode)
     response = await get_openai_async().chat.completions.create(
         model=MODEL,
         max_completion_tokens=MAX_TOKENS,
@@ -234,9 +244,13 @@ async def answer_filing_question(
     )
 
     answer = response.choices[0].message.content
+    llm_tokens_total.labels(model=MODEL, token_type="input").inc(response.usage.prompt_tokens)
+    llm_tokens_total.labels(model=MODEL, token_type="output").inc(response.usage.completion_tokens)
     logger.info(
-        "Answer generated. input_tokens=%d output_tokens=%d",
-        response.usage.prompt_tokens, response.usage.completion_tokens,
+        "filings_agent.completed",
+        ticker=ticker,
+        tokens_in=response.usage.prompt_tokens,
+        tokens_out=response.usage.completion_tokens,
     )
 
     return FilingsAnswer(question=question, answer=answer, ticker=ticker, sources=chunks, model=MODEL)

@@ -1,9 +1,14 @@
 import os
-
 from typing import Callable, Awaitable
+
+import structlog
+
 from ..clients import get_anthropic_async
+from ..metrics import llm_tokens_total
 from ..state import AgentState
 from .base import node_error
+
+logger = structlog.get_logger(__name__)
 
 MODEL      = os.getenv("SYNTHESIZER_MODEL", "claude-sonnet-4-6")
 MAX_TOKENS = int(os.getenv("SYNTHESIZER_MAX_TOKENS", "2048"))
@@ -70,6 +75,21 @@ def make_synthesizer_node(
             if state.get("news_output"):
                 parts.append(f"## Recent News Sentiment\n{state['news_output']}")
 
+            sources = [
+                k for k, present in {
+                    "market": bool(state.get("market_output")),
+                    "filings": bool(state.get("filings_output")),
+                    "news": bool(state.get("news_output")),
+                }.items() if present
+            ]
+            logger.info(
+                "synthesizer.started",
+                ticker=state.get("ticker"),
+                route=state.get("route"),
+                sources=sources,
+                model=MODEL,
+            )
+
             combined = "\n\n".join(parts)
 
             # Build messages: prepend prior Q&A turns so the model can resolve
@@ -103,10 +123,22 @@ def make_synthesizer_node(
                     chunks.append(text)
                     if on_token is not None:
                         await on_token(text)
+                usage = stream.current_message_snapshot.usage
+                llm_tokens_total.labels(model=MODEL, token_type="input").inc(usage.input_tokens)
+                llm_tokens_total.labels(model=MODEL, token_type="output").inc(usage.output_tokens)
+                cache_read = getattr(usage, "cache_read_input_tokens", None) or 0
+                if cache_read:
+                    llm_tokens_total.labels(model=MODEL, token_type="cache_read").inc(cache_read)
 
+            logger.info(
+                "synthesizer.completed",
+                ticker=state.get("ticker"),
+                output_chars=sum(len(c) for c in chunks),
+            )
             return {"final_answer": "".join(chunks)}
 
         except Exception as exc:
+            logger.exception("synthesizer.failed", ticker=state.get("ticker"), exc=str(exc))
             return node_error("final_answer", "synthesizer", exc)
 
     return synthesizer_node

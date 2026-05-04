@@ -1,0 +1,45 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: warn
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker
+
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+
+    relabel_configs:
+      # Service name from Docker Compose label → "service" label in Loki
+      - source_labels: [__meta_docker_container_label_com_docker_compose_service]
+        target_label: service
+
+      # Strip the leading slash from the container name
+      - source_labels: [__meta_docker_container_name]
+        regex: '/(.*)'
+        target_label: container
+
+      # Compose project name (useful when running multiple compose stacks)
+      - source_labels: [__meta_docker_container_label_com_docker_compose_project]
+        target_label: compose_project
+
+    pipeline_stages:
+      # Parse log lines that are JSON (backend structured logs).
+      # Non-JSON lines (nginx, postgres, redis) pass through unchanged.
+      - json:
+          expressions:
+            level: level
+            event: event
+            logger: logger
+
+      # Promote "level" to a Loki index label so you can filter cheaply:
+      #   {service="backend", level="error"}
+      - labels:
+          level:

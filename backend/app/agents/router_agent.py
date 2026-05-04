@@ -1,7 +1,12 @@
 import json
 import os
+
+import structlog
+
 from ..state import AgentState
 from ..clients import get_openai_async
+
+logger = structlog.get_logger(__name__)
 
 MODEL = os.getenv("ROUTER_AGENT_MODEL", "gpt-4o-mini")
 
@@ -92,12 +97,14 @@ async def router_node(state: AgentState) -> dict:
         tickers = parsed.get("tickers")
 
         if route not in VALID_ROUTES:
+            logger.warning("router.invalid_route", route=route, fallback="both")
             route = "both"
 
         # Normalise: compare must have a tickers list
         if route == "compare":
             if not isinstance(tickers, list) or len(tickers) < 2:
-                route = "filings"   # fall back gracefully
+                logger.warning("router.compare_insufficient_tickers", tickers=tickers, fallback="filings")
+                route = "filings"
                 tickers = None
             else:
                 tickers = [t.upper() for t in tickers]
@@ -110,7 +117,10 @@ async def router_node(state: AgentState) -> dict:
         if not ticker and not tickers and prev_ticker:
             ticker = prev_ticker
 
+        logger.info("router.classified", route=route, ticker=ticker, tickers=tickers)
+
     except json.JSONDecodeError:
+        logger.warning("router.parse_failed", raw_preview=raw[:200])
         route   = "both"
         ticker  = None
         tickers = None

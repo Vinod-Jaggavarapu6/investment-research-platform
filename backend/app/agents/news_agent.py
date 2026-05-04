@@ -8,13 +8,14 @@ Flow:
   4. Return NewsSentiment with top catalysts
 """
 
+import asyncio
 import json
-import logging
 import os
 import time
 from datetime import datetime
 
 import openai
+import structlog
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.models import (
@@ -27,10 +28,11 @@ from app.models import (
 from app.tools.news_data import fetch_news
 from app.agents.financial_agent import _elapsed
 from ..clients import get_openai_sync
+from ..metrics import llm_tokens_total
 from ..state import AgentState
 from .base import node_error
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 MODEL          = os.getenv("NEWS_AGENT_MODEL", "gpt-4o-mini")
 NEWS_MAX_TOKENS = int(os.getenv("NEWS_AGENT_MAX_TOKENS", "2000"))
@@ -169,6 +171,10 @@ def _score_batch(
         tool_choice={"type": "function", "function": {"name": "submit_sentiment"}},
     )
 
+    if response.usage:
+        llm_tokens_total.labels(model=MODEL, token_type="input").inc(response.usage.prompt_tokens)
+        llm_tokens_total.labels(model=MODEL, token_type="output").inc(response.usage.completion_tokens)
+
     tool_calls = (response.choices[0].message.tool_calls or []) if response.choices else []
     for tc in tool_calls:
         if tc.function.name == "submit_sentiment":
@@ -275,7 +281,7 @@ def analyze_news_sentiment(
             duration_ms=_elapsed(start),
         )
 
-    logger.info(f"[{ticker}] scoring {len(articles)} articles in batches of {MAX_ARTICLES_PER_BATCH}")
+    logger.info("news_agent.scoring", ticker=ticker, article_count=len(articles), batch_size=MAX_ARTICLES_PER_BATCH)
 
     # ── Step B: Score in batches ────────────────────────────────────────
     all_bull: list[str] = []
@@ -288,7 +294,7 @@ def analyze_news_sentiment(
         try:
             scored_dicts, bull, bear, summary = _score_batch(ticker, batch)
         except Exception as e:
-            logger.error(f"[{ticker}] batch scoring failed: {e}")
+            logger.error("news_agent.batch_failed", ticker=ticker, error=str(e))
             continue
 
         for scored in scored_dicts:
@@ -300,10 +306,7 @@ def analyze_news_sentiment(
                     article.score         = float(scored["score"])
                     article.justification = scored.get("justification")
                 except ValueError:
-                    logger.warning(
-                        f"Unexpected sentiment value: {scored.get('sentiment')!r} "
-                        f"— defaulting to NEUTRAL"
-                    )
+                    logger.warning("news_agent.invalid_sentiment", value=scored.get("sentiment"), fallback="NEUTRAL")
                     article.sentiment     = ArticleSentiment.NEUTRAL
                     article.score         = 0.0
                     article.justification = scored.get("justification")
@@ -324,9 +327,13 @@ def analyze_news_sentiment(
     )
 
     logger.info(
-        f"[{ticker}] complete — signal={sentiment.signal.value} "
-        f"score={sentiment.overall_score} "
-        f"scored={sentiment.scored_count}/{sentiment.article_count}"
+        "news_agent.completed",
+        ticker=ticker,
+        signal=sentiment.signal.value,
+        score=sentiment.overall_score,
+        scored=sentiment.scored_count,
+        total=sentiment.article_count,
+        duration_ms=_elapsed(start),
     )
 
     return NewsResponse(

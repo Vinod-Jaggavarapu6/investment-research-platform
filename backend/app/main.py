@@ -1,54 +1,69 @@
 from __future__ import annotations
 
-import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
+import sentry_sdk
+import structlog
 from fastapi import FastAPI
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from sentry_sdk.integrations.starlette import StarletteIntegration
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from app import state
 from app.cache.redis_client import ResearchCacheClient, RedisConfig
 from app.clients import init_clients
 from app.database import create_tables, get_checkpointer_url
+from app.logging_config import configure_logging
+from app.middleware.request_logging import RequestLoggingMiddleware
 from app.routers import analysis, cache, conversations, ingest, news, rag, research
+from app.tracing import setup_tracing
 
+_sentry_dsn = os.getenv("SENTRY_DSN")
+if _sentry_dsn:
+    sentry_sdk.init(
+        dsn=_sentry_dsn,
+        integrations=[StarletteIntegration(), FastApiIntegration()],
+        traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.1")),
+        environment=os.getenv("ENVIRONMENT", "development"),
+        send_default_pii=False,
+    )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-    datefmt="%H:%M:%S",
-)
-logger = logging.getLogger(__name__)
+configure_logging()
+logger = structlog.get_logger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("=== Investment Research Platform — Phase 3 starting ===")
-    logger.info(f"ANTHROPIC_API_KEY set: {bool(os.getenv('ANTHROPIC_API_KEY'))}")
-    logger.info(f"OPENAI_API_KEY set:    {bool(os.getenv('OPENAI_API_KEY'))}")
+    logger.info("startup", phase=3, service="investment-research-platform")
+    logger.info(
+        "api_keys_present",
+        anthropic=bool(os.getenv("ANTHROPIC_API_KEY")),
+        openai=bool(os.getenv("OPENAI_API_KEY")),
+    )
 
     init_clients()
-    logger.info("LLM clients initialized")
+    logger.info("llm_clients_initialized")
 
     await create_tables()
 
     state.cache = ResearchCacheClient(RedisConfig())
     redis_ok = await state.cache.health_check()
-    logger.info(f"Redis connected: {redis_ok}")
+    logger.info("redis_connected", ok=redis_ok)
 
     async with AsyncPostgresSaver.from_conn_string(get_checkpointer_url()) as checkpointer:
         await checkpointer.setup()
         state.checkpointer = checkpointer
-        logger.info("LangGraph Postgres checkpointer initialized")
+        logger.info("checkpointer_initialized", backend="postgres")
 
         yield
 
     await state.cache.close()
-    logger.info("=== Shutting down ===")
+    logger.info("shutdown")
 
 
 app = FastAPI(
@@ -68,6 +83,20 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+app.add_middleware(RequestLoggingMiddleware)
+
+# Auto-instrument all HTTP routes and expose /metrics.
+# Excludes /metrics and /health themselves to avoid self-referential noise.
+Instrumentator(
+    should_group_status_codes=True,
+    should_instrument_requests_inprogress=True,
+    excluded_handlers=["/metrics", "/health", "/"],
+    inprogress_labels=True,
+).instrument(app).expose(app, tags=["Infrastructure"])
+
+# OTel tracing — wires FastAPI, SQLAlchemy, Redis auto-instrumentation and
+# starts exporting spans to Tempo via OTLP/gRPC.
+setup_tracing(app)
 
 
 @app.get("/", include_in_schema=False)
@@ -80,7 +109,7 @@ async def health():
     return {
         "status": "healthy",
         "service": "investment-research-platform",
-        "phase": 2,
+        "phase": 3,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
