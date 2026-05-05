@@ -1,0 +1,14 @@
+apiVersion: 1
+
+datasources:
+  - name: CloudWatch
+    type: cloudwatch
+    uid: cloudwatch
+    access: proxy
+    isDefault: false
+    version: 1
+    editable: false
+    jsonData:
+      authType: default  # uses the ECS task role (no keys needed)
+      defaultRegion: us-east-1
+      logsTimeout: 30s

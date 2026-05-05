@@ -29,7 +29,6 @@ dependencies = [
     "psycopg[binary]>=3.3.3",
     "finnhub-python>=2.4.28",
     "sse-starlette>=3.3.4",
-    "boto3>=1.42.95",
     "structlog>=24.0.0",
     "prometheus-client>=0.20.0",
     "prometheus-fastapi-instrumentator>=6.1.0",

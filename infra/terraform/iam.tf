@@ -47,3 +47,30 @@ resource "aws_iam_role" "ecs_task" {
     }]
   })
 }
+
+# Grafana needs CloudWatch read access to query logs as a datasource
+resource "aws_iam_role_policy" "ecs_cloudwatch_read" {
+  name = "${var.project}-ecs-cloudwatch-read"
+  role = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "logs:DescribeLogGroups",
+        "logs:DescribeLogStreams",
+        "logs:GetLogEvents",
+        "logs:FilterLogEvents",
+        "logs:StartQuery",
+        "logs:StopQuery",
+        "logs:GetQueryResults",
+        "logs:GetLogRecord",
+        "cloudwatch:GetMetricData",
+        "cloudwatch:ListMetrics",
+        "cloudwatch:DescribeAlarmsForMetric",
+      ]
+      Resource = "*"
+    }]
+  })
+}

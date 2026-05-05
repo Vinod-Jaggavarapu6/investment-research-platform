@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    env: production
+
+scrape_configs:
+  - job_name: backend
+    static_configs:
+      - targets: ["backend.investment-research.local:8000"]
+    metrics_path: /metrics
+    scrape_interval: 15s
