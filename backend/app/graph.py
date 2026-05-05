@@ -14,6 +14,7 @@ from .agents.filings_agent import make_filings_node
 from .agents.news_agent import make_news_node
 from .agents.synthesizer import make_synthesizer_node
 from .agents.compare_agent import make_compare_node
+from .agents.general_agent import make_general_node
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,7 @@ def pick_agents_for_route(state: AgentState) -> list[str]:
                    "filings_recent"):     return ["filings_agent"]
     elif route == "news":                 return ["news_agent"]
     elif route == "both":                 return ["market_agent", "filings_agent"]
+    elif route == "general":              return ["general_agent"]
     else:                                 return ["market_agent", "filings_agent", "news_agent"]
 
 
@@ -47,6 +49,7 @@ def build_graph(
     g.add_node("news_agent",     make_news_node())
     g.add_node("synthesizer",    make_synthesizer_node(on_token))
     g.add_node("compare_agent",  make_compare_node(db, on_token))
+    g.add_node("general_agent",  make_general_node(on_token))
 
     g.set_entry_point("router")
 
@@ -55,12 +58,13 @@ def build_graph(
     g.add_conditional_edges(
         "data_preflight",
         pick_agents_for_route,
-        ["market_agent", "filings_agent", "news_agent", "compare_agent", END],
+        ["market_agent", "filings_agent", "news_agent", "compare_agent", "general_agent", END],
     )
     g.add_edge("market_agent",  "synthesizer")
     g.add_edge("filings_agent", "synthesizer")
     g.add_edge("news_agent",    "synthesizer")
     g.add_edge("synthesizer",   END)
-    g.add_edge("compare_agent", END)
+    g.add_edge("compare_agent",  END)
+    g.add_edge("general_agent",  END)
 
     return g.compile(checkpointer=checkpointer or MemorySaver())

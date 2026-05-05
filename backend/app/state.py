@@ -4,7 +4,7 @@ from typing_extensions import TypedDict
 
 class AgentState(TypedDict, total=False):
     question:       str
-    route:          Optional[Literal["market", "filings", "filings_recent", "both", "news", "comprehensive", "compare"]]
+    route:          Optional[Literal["market", "filings", "filings_recent", "both", "news", "comprehensive", "compare", "general"]]
     ticker:         Optional[str]
     tickers:        Optional[list[str]]
     market_output:  Optional[str]
