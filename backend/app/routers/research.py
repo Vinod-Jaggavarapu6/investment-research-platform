@@ -82,7 +82,6 @@ async def research(
 )
 async def research_stream_endpoint(
     question:        str           = Query(..., description="Research question"),
-    ticker:          str           = Query("", description="Stock ticker, e.g. AAPL (optional — extracted from question if omitted)"),
     conversation_id: Optional[str] = Query(None, description="Existing conversation ID to resume, or omit to start a new one"),
     session_id:      str           = Query("default", description="Browser session UUID"),
     request:         Request       = None,
@@ -94,7 +93,6 @@ async def research_stream_endpoint(
 
         async for sse_event in research_stream(
             question=question,
-            ticker=ticker,
             db=db,
             cache=state.cache,
             checkpointer=state.checkpointer,
@@ -102,7 +100,7 @@ async def research_stream_endpoint(
             session_id=session_id,
         ):
             if await request.is_disconnected():
-                logger.info("Client disconnected mid-stream, stopping (ticker=%s)", ticker)
+                logger.info("Client disconnected mid-stream")
                 break
 
             yield sse_event

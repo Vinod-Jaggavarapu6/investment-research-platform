@@ -112,7 +112,19 @@ def make_synthesizer_node(
                 model=MODEL,
             )
 
-            combined = "\n\n".join(parts)
+            fresh_combined = "\n\n".join(parts)
+
+            # On follow-up turns the research pipeline re-runs but live market data
+            # changes, producing a different combined string and breaking the cache.
+            # Reuse the stored context from the previous turn when it exists AND the
+            # ticker hasn't changed, so the cached block is byte-for-byte identical
+            # and Claude can read from cache. Always fall back to fresh data for new
+            # tickers or when no prior context is available (first turn).
+            current_ticker  = state.get("ticker") or ""
+            prior_context   = state.get("research_context")
+            prior_ticker    = state.get("research_context_ticker") or ""
+            same_ticker     = current_ticker and current_ticker == prior_ticker
+            combined = (prior_context if (prior_context and same_ticker) else fresh_combined)
 
             # Build messages: prepend prior Q&A turns so the model can resolve
             # follow-up references ("that figure", "elaborate on point 3", etc.)
@@ -138,7 +150,7 @@ def make_synthesizer_node(
             async with get_anthropic_async().messages.stream(
                 model=MODEL,
                 max_tokens=MAX_TOKENS,
-                system=SYNTH_SYSTEM,
+                system=[{"type": "text", "text": SYNTH_SYSTEM, "cache_control": {"type": "ephemeral"}}],
                 messages=messages
             ) as stream:
                 async for text in stream.text_stream:
@@ -148,16 +160,33 @@ def make_synthesizer_node(
                 usage = stream.current_message_snapshot.usage
                 llm_tokens_total.labels(model=MODEL, token_type="input").inc(usage.input_tokens)
                 llm_tokens_total.labels(model=MODEL, token_type="output").inc(usage.output_tokens)
-                cache_read = getattr(usage, "cache_read_input_tokens", None) or 0
+                cache_read     = getattr(usage, "cache_read_input_tokens", None) or 0
+                cache_creation = getattr(usage, "cache_creation_input_tokens", None) or 0
                 if cache_read:
                     llm_tokens_total.labels(model=MODEL, token_type="cache_read").inc(cache_read)
+                if cache_creation:
+                    llm_tokens_total.labels(model=MODEL, token_type="cache_creation").inc(cache_creation)
+                logger.info(
+                    "synthesizer.cache_usage",
+                    cache_read=cache_read,
+                    cache_creation=cache_creation,
+                    uncached_input=usage.input_tokens,
+                )
 
             logger.info(
                 "synthesizer.completed",
                 ticker=state.get("ticker"),
                 output_chars=sum(len(c) for c in chunks),
+                cache_context_source="prior" if (prior_context and same_ticker) else "fresh",
             )
-            return {"final_answer": "".join(chunks)}
+            return {
+                "final_answer": "".join(chunks),
+                # Always persist fresh research so the NEXT follow-up turn gets
+                # up-to-date context. The current turn already sent either fresh or
+                # prior context; future turns will benefit from this fresh snapshot.
+                "research_context":        fresh_combined,
+                "research_context_ticker": current_ticker,
+            }
 
         except Exception as exc:
             logger.exception("synthesizer.failed", ticker=state.get("ticker"), exc=str(exc))

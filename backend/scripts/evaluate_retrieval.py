@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
 load_dotenv()
 
+from app.clients import init_clients
 from app.database import AsyncSessionLocal
 from app.tools.retrieval import retrieve_chunks, ticker_has_data
 
@@ -344,6 +345,8 @@ def print_trend() -> None:
 # ---------------------------------------------------------------------------
 
 async def main():
+    init_clients()
+
     if not EVAL_SET_PATH.exists():
         print(f"Eval set not found at {EVAL_SET_PATH}")
         return

@@ -26,9 +26,10 @@ async def retrieve_chunks(
     query:           str,
     db:              AsyncSession,
     ticker:          Optional[str] = None,
-    k:               int = 5,
+    k:               int = 10,
     filing_types:    list[str] | None = None,
     score_threshold: float = 0.65,
+    min_return:      int = 3,
 ) -> list[dict]:
     """
     Embed query → pgvector cosine search → return top-k chunks above threshold.
@@ -39,6 +40,7 @@ async def retrieve_chunks(
         ticker:          Optional — restrict results to one company e.g. "AAPL"
         k:               How many chunks to return (before threshold filtering)
         score_threshold: Discard chunks with cosine similarity below this value
+        min_return:      Always return at least this many chunks even if below threshold
 
     Returns:
         List of dicts with text, ticker, year, section, score (0–1).
@@ -82,6 +84,15 @@ async def retrieve_chunks(
         logger.info(
             "[retrieval] dropped %d low-quality chunk(s) below threshold=%.2f (kept %d/%d)",
             n_dropped, score_threshold, len(filtered), len(chunks),
+        )
+
+    # Soft fallback: always surface at least min_return chunks so the LLM has
+    # something to work with even when scores are universally below threshold.
+    if len(filtered) < min_return and len(chunks) >= min_return:
+        filtered = chunks[:min_return]
+        logger.warning(
+            "[retrieval] soft-threshold fallback: returning top %d chunks (all below %.2f)",
+            min_return, score_threshold,
         )
 
     logger.info(

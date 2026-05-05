@@ -12,6 +12,7 @@ Routes:
   filings_recent → 10-Q/8-K only, higher K, recent-focused prompt
 """
 
+import asyncio
 import os
 from dataclasses import dataclass
 from langsmith import traceable
@@ -34,8 +35,9 @@ logger = structlog.get_logger(__name__)
 
 MODEL              = os.getenv("FILINGS_AGENT_MODEL", "gpt-4o")
 MAX_TOKENS         = int(os.getenv("FILINGS_AGENT_MAX_TOKENS", "2048"))
-RETRIEVAL_K        = int(os.getenv("FILINGS_RETRIEVAL_K", "5"))
-RETRIEVAL_K_RECENT = int(os.getenv("FILINGS_RETRIEVAL_K_RECENT", "8"))
+RETRIEVAL_K        = int(os.getenv("FILINGS_RETRIEVAL_K", "10"))
+RETRIEVAL_K_RECENT = int(os.getenv("FILINGS_RETRIEVAL_K_RECENT", "12"))
+HYDE_MODEL         = "gpt-4o-mini"
 
 SYSTEM_PROMPT = """You are a financial research analyst specializing in SEC filings.
 
@@ -150,6 +152,76 @@ async def _make_search_query(question: str, ticker: str | None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# HyDE helpers
+# ---------------------------------------------------------------------------
+
+async def _hyde_query(question: str, ticker: str | None, recent_mode: bool) -> str | None:
+    """
+    Generate a short hypothetical SEC filing excerpt that would answer the question.
+    Embedding this bridges the gap between question embeddings and declarative financial text.
+    Returns None on any failure so callers fall back to the original query.
+    """
+    filing_hint = "recent 10-Q or 8-K quarterly report" if recent_mode else "SEC filing (10-K, 10-Q, or 8-K)"
+    try:
+        response = await get_openai_async().chat.completions.create(
+            model=HYDE_MODEL,
+            max_completion_tokens=80,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Write 1-2 sentences from a {filing_hint} that would directly answer this question. "
+                    f"Use realistic financial language and terminology. Do not invent specific numbers.\n\n"
+                    f"Question: {question}\n"
+                    + (f"Company ticker: {ticker}\n" if ticker else "")
+                    + "Excerpt:"
+                ),
+            }],
+        )
+        if response.usage:
+            llm_tokens_total.labels(model=HYDE_MODEL, token_type="input").inc(response.usage.prompt_tokens)
+            llm_tokens_total.labels(model=HYDE_MODEL, token_type="output").inc(response.usage.completion_tokens)
+        return response.choices[0].message.content.strip()
+    except Exception:
+        logger.warning("hyde_query failed, falling back to original search query", exc_info=True)
+        return None
+
+
+async def _retrieve_with_hyde(
+    search_query: str,
+    hyde_text:    str | None,
+    db:           AsyncSession,
+    ticker:       str | None,
+    k:            int,
+    filing_types: list[str] | None,
+) -> list[dict]:
+    """
+    Retrieve chunks using both the rewritten search query and the HyDE text in parallel.
+    Deduplicates by (ticker, year, section, text prefix), keeping the highest score per chunk.
+    Falls back to plain retrieval when hyde_text is None.
+    """
+    if not hyde_text:
+        return await retrieve_chunks(query=search_query, db=db, ticker=ticker, k=k, filing_types=filing_types)
+
+    base_chunks, hyde_chunks = await asyncio.gather(
+        retrieve_chunks(query=search_query, db=db, ticker=ticker, k=k, filing_types=filing_types),
+        retrieve_chunks(query=hyde_text,    db=db, ticker=ticker, k=k, filing_types=filing_types),
+    )
+
+    seen: dict[tuple, dict] = {}
+    for chunk in base_chunks + hyde_chunks:
+        key = (chunk["ticker"], chunk["year"], chunk["section"], chunk["text"][:100])
+        if key not in seen or chunk["score"] > seen[key]["score"]:
+            seen[key] = chunk
+
+    merged = sorted(seen.values(), key=lambda c: c["score"], reverse=True)[:k]
+    logger.info(
+        "filings_agent.hyde_merged",
+        base=len(base_chunks), hyde=len(hyde_chunks), merged=len(merged),
+    )
+    return merged
+
+
+# ---------------------------------------------------------------------------
 # Core agent function
 # ---------------------------------------------------------------------------
 @traceable(name="filings-agent")
@@ -175,17 +247,22 @@ async def answer_filing_question(
     # ------------------------------------------------------------------
     # Step 1: Retrieve relevant chunks
     # ------------------------------------------------------------------
-    search_query = await _make_search_query(question, ticker)
+    search_query, hyde_text = await asyncio.gather(
+        _make_search_query(question, ticker),
+        _hyde_query(question, ticker, recent_mode),
+    )
     logger.info(
         "filings_agent.retrieving",
         ticker=ticker,
         search_query=search_query,
+        hyde_used=hyde_text is not None,
         filing_types=filing_types,
         k=k,
         recent_mode=recent_mode,
     )
-    chunks = await retrieve_chunks(
-        query=search_query,
+    chunks = await _retrieve_with_hyde(
+        search_query=search_query,
+        hyde_text=hyde_text,
         db=db,
         ticker=ticker,
         k=k,

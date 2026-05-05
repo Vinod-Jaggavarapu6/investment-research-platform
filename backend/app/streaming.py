@@ -172,7 +172,6 @@ async def _create_conversation(
 
 async def research_stream(
     question:        str,
-    ticker:          str,
     db,
     cache=None,
     checkpointer=None,
@@ -180,12 +179,10 @@ async def research_stream(
     session_id:      str = "default",
 ) -> AsyncGenerator[dict, None]:
 
-    derived_ticker: str = ticker.upper() if ticker else ""
+    derived_ticker: str = ""
     conversation_id = conversation_id or str(uuid.uuid4())
     logger.info(
         "stream.started",
-        request_ticker=ticker,
-        derived_ticker=derived_ticker,
         conversation_id=conversation_id,
     )
 
@@ -198,12 +195,7 @@ async def research_stream(
 
     graph = build_graph(db=db, on_token=on_token, cache=cache, checkpointer=checkpointer)
 
-    # Only set ticker when explicitly provided — omitting it lets LangGraph
-    # preserve the checkpoint value from the previous turn, which the router
-    # then reads as prev_ticker for follow-up context.
     initial_state: AgentState = {"question": question}
-    if derived_ticker:
-        initial_state["ticker"] = derived_ticker
 
     # Load prior messages for follow-up context ("elaborate on X", "that figure you mentioned")
     if db and conversation_id:

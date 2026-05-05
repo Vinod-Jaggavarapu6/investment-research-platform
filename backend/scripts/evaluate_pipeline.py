@@ -28,6 +28,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import anthropic
+from app.clients import init_clients
 from app.database import AsyncSessionLocal, get_checkpointer_url
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from app.graph import build_graph
@@ -91,6 +92,24 @@ EVAL_QUESTIONS: list[dict] = [
     {"id": 10, "question": "What should I know about NVDA before investing?",
      "expected_route": "comprehensive", "expected_ticker": "NVDA",
      "requires_citations": True, "requires_news": True},
+
+    # GENERAL (2) — non-financial concept questions; should never hit the RAG pipeline
+    {"id": 11, "question": "What is a price-to-earnings ratio?",
+     "expected_route": "general", "expected_ticker": None,
+     "requires_citations": False, "requires_news": False},
+
+    {"id": 12, "question": "Explain what EBITDA means and how it is used in financial analysis",
+     "expected_route": "general", "expected_ticker": None,
+     "requires_citations": False, "requires_news": False},
+
+    # COMPARE (2) — multi-ticker comparisons that go through the compare agent
+    {"id": 13, "question": "Compare NVDA and AMD on AI chip revenue and data center positioning",
+     "expected_route": "compare", "expected_ticker": None,
+     "requires_citations": True, "requires_news": False},
+
+    {"id": 14, "question": "How does Apple's gross margin compare to Microsoft's based on their annual filings?",
+     "expected_route": "compare", "expected_ticker": None,
+     "requires_citations": True, "requires_news": False},
 ]
 
 
@@ -132,9 +151,10 @@ class PipelineResult:
 # LLM-as-judge (Claude Haiku — cheap, fast)
 # ---------------------------------------------------------------------------
 
-JUDGE_SYSTEM = """\
-You are a financial research quality evaluator. Score the answer to the given question
-on a 1–5 scale using ONLY the criteria below. Respond with valid JSON only.
+JUDGE_SYSTEM = f"""\
+You are a financial research quality evaluator. Today's date is {datetime.now().strftime('%Y-%m-%d')}.
+Score the answer to the given question on a 1–5 scale using ONLY the criteria below.
+Respond with valid JSON only.
 
 Scoring rubric:
   5 — Excellent: specific numbers cited, sources referenced, clear reasoning,
@@ -144,8 +164,10 @@ Scoring rubric:
   2 — Weak: partially relevant but mostly generic or incomplete
   1 — Poor: empty, off-topic, hallucinated, or refused to answer
 
+Note: dates in 2025–2026 are current and valid — do not penalise for recency.
+
 Return JSON only:
-  {"score": <1-5>, "reason": "<one sentence explaining the score>"}
+  {{"score": <1-5>, "reason": "<one sentence explaining the score>"}}
 """
 
 _judge_client: anthropic.Anthropic | None = None
@@ -293,7 +315,7 @@ def compute_metrics(results: list[PipelineResult]) -> dict:
             return 0.0
         return round(sum(1 for r in items if getattr(r, attr)) / len(items), 4)
 
-    by_route: dict[str, list] = {r: [] for r in ["market", "filings", "both", "news", "comprehensive"]}
+    by_route: dict[str, list] = {r: [] for r in ["market", "filings", "both", "news", "comprehensive", "compare", "general"]}
     for r in results:
         if r.expected_route in by_route:
             by_route[r.expected_route].append(r)
@@ -316,6 +338,8 @@ def compute_metrics(results: list[PipelineResult]) -> dict:
         "route_accuracy_both":           accuracy(by_route["both"],          "route_correct"),
         "route_accuracy_news":           accuracy(by_route["news"],          "route_correct"),
         "route_accuracy_comprehensive":  accuracy(by_route["comprehensive"], "route_correct"),
+        "route_accuracy_compare":        accuracy(by_route["compare"],       "route_correct"),
+        "route_accuracy_general":        accuracy(by_route["general"],       "route_correct"),
         "avg_latency_ms":          round(sum(r.latency_ms for r in results) / n, 1),
         "p95_latency_ms":          round(sorted(r.latency_ms for r in results)[int(n * 0.95)], 1),
     }
@@ -371,6 +395,8 @@ def print_results(results: list[PipelineResult], metrics: dict) -> None:
     print(f"    both            : {metrics['route_accuracy_both']:.1%}")
     print(f"    news            : {metrics['route_accuracy_news']:.1%}")
     print(f"    comprehensive   : {metrics['route_accuracy_comprehensive']:.1%}")
+    print(f"    compare         : {metrics.get('route_accuracy_compare', 0):.1%}")
+    print(f"    general         : {metrics.get('route_accuracy_general', 0):.1%}")
     print(f"  Ticker accuracy   : {metrics['ticker_accuracy']:.1%}")
     print(f"  Answer produced   : {metrics['answer_completeness']:.1%}")
     print(f"  Citation coverage : {metrics['citation_coverage']:.1%}  (filings+both+comprehensive)")
@@ -445,7 +471,7 @@ def append_history(metrics: dict) -> None:
     keep_keys = {
         "route_accuracy", "ticker_accuracy", "citation_coverage",
         "news_coverage", "llm_quality_avg", "llm_quality_pct_good",
-        "avg_latency_ms",
+        "avg_latency_ms", "route_accuracy_compare", "route_accuracy_general",
     }
     record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -484,6 +510,8 @@ def print_trend() -> None:
 # ---------------------------------------------------------------------------
 
 async def main():
+    init_clients()
+
     questions = load_eval_set()
     print(f"Loaded {len(questions)} eval questions")
 

@@ -67,15 +67,51 @@ SECTION_PATTERNS_8K: dict[str, str] = {
 # Shared HTML → plain-text extractor
 # ---------------------------------------------------------------------------
 
+def _table_to_text(table) -> str:
+    """
+    Convert an HTML table to pipe-delimited plain text preserving row/column structure.
+    Financial statement tables (income statement, balance sheet) retain their grid
+    so the LLM can read figures in context rather than as unrelated word sequences.
+
+    Falls back to get_text for degenerate tables (single-column, or >50 rows which
+    are typically XBRL footnote dumps).
+    """
+    rows = table.find_all("tr")
+    if not rows:
+        return table.get_text(separator=" ")
+
+    grid = []
+    for row in rows:
+        cells = row.find_all(["td", "th"])
+        grid.append([c.get_text(strip=True) for c in cells])
+
+    col_counts = [len(r) for r in grid if r]
+    if not col_counts or max(col_counts) < 2 or len(grid) > 50:
+        return table.get_text(separator=" ")
+
+    max_cols = max(len(r) for r in grid)
+    padded = [r + [""] * (max_cols - len(r)) for r in grid]
+    col_widths = [
+        max(len(padded[ri][ci]) for ri in range(len(padded)))
+        for ci in range(max_cols)
+    ]
+
+    lines = [
+        " | ".join(cell.ljust(col_widths[ci]) for ci, cell in enumerate(row))
+        for row in padded
+    ]
+    return "\n".join(lines)
+
+
 def _html_to_text(html_path: Path) -> str:
-    """Strip noise tags, flatten tables, and return normalized plain text."""
+    """Strip noise tags, convert tables to structured text, and return normalized plain text."""
     html = html_path.read_text(encoding="utf-8", errors="ignore")
     soup = BeautifulSoup(html, "lxml")
 
     for tag in soup(["script", "style", "ix:nonnumeric", "ix:nonfraction"]):
         tag.decompose()
     for table in soup.find_all("table"):
-        table.replace_with(table.get_text(separator=" "))
+        table.replace_with(_table_to_text(table))
 
     text = soup.get_text(separator="\n")
     text = re.sub(r"\n{3,}", "\n\n", text)

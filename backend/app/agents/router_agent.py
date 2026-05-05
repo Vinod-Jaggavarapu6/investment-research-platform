@@ -40,8 +40,11 @@ Examples:
   "Which is better, NVDA or AMD for AI?"           → {"route": "compare", "ticker": null, "tickers": ["NVDA", "AMD"]}
   "GOOGL vs META vs AMZN cloud strategy"           → {"route": "compare", "ticker": null, "tickers": ["GOOGL", "META", "AMZN"]}
   "Compare JPM and BAC margins"                    → {"route": "compare", "ticker": null, "tickers": ["JPM", "BAC"]}
+  "Compare NVIDIA and AMD on AI chips"             → {"route": "compare", "ticker": null, "tickers": ["NVDA", "AMD"]}
+  "Apple vs Microsoft gross margin"                → {"route": "compare", "ticker": null, "tickers": ["AAPL", "MSFT"]}
   "What is AAPL's current price?"                  → {"route": "market",  "ticker": "AAPL", "tickers": null}
   "What did MSFT disclose about revenue?"          → {"route": "filings", "ticker": "MSFT", "tickers": null}
+  "What did NVDA say in their most recent 10-K?"   → {"route": "filings", "ticker": "NVDA", "tickers": null}
   "What happened last quarter at NVDA?"            → {"route": "filings_recent", "ticker": "NVDA", "tickers": null}
   "News sentiment around TSLA?"                    → {"route": "news",    "ticker": "TSLA", "tickers": null}
   "Is NVDA valuation justified vs guidance?"       → {"route": "both",    "ticker": "NVDA", "tickers": null}
@@ -54,8 +57,8 @@ Examples:
 
 ROUTE SIGNALS:
   MARKET:          "What is X's price/P/E/margin/revenue/market cap?" — plain metric lookup
-  FILINGS:         verbs like disclose, say, state, guide, report (annual)
-  FILINGS_RECENT:  "last quarter", "recent earnings", "Q1/Q2/Q3/Q4", "latest", "8-K"
+  FILINGS:         verbs like disclose, say, state, guide, report (annual); "most recent 10-K" is FILINGS not FILINGS_RECENT
+  FILINGS_RECENT:  "last quarter", "recent earnings", "Q1/Q2/Q3/Q4", "latest quarter", "8-K"
   NEWS:            sentiment, momentum, headlines, analysts saying, catalysts
   BOTH:            valuation vs guidance, price vs disclosed risks
   COMPREHENSIVE:   "full picture", "full analysis", "what should I know before investing"

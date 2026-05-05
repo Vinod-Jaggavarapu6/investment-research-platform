@@ -179,7 +179,7 @@ async def compare_companies(
     async with get_anthropic_async().messages.stream(
         model=MODEL,
         max_tokens=MAX_TOKENS,
-        system=COMPARE_SYSTEM,
+        system=[{"type": "text", "text": COMPARE_SYSTEM, "cache_control": {"type": "ephemeral"}}],
         messages=[
             {
                 "role": "user",
@@ -215,9 +215,18 @@ async def compare_companies(
         usage = stream.current_message_snapshot.usage
         llm_tokens_total.labels(model=MODEL, token_type="input").inc(usage.input_tokens)
         llm_tokens_total.labels(model=MODEL, token_type="output").inc(usage.output_tokens)
-        cache_read = getattr(usage, "cache_read_input_tokens", None) or 0
+        cache_read     = getattr(usage, "cache_read_input_tokens", None) or 0
+        cache_creation = getattr(usage, "cache_creation_input_tokens", None) or 0
         if cache_read:
             llm_tokens_total.labels(model=MODEL, token_type="cache_read").inc(cache_read)
+        if cache_creation:
+            llm_tokens_total.labels(model=MODEL, token_type="cache_creation").inc(cache_creation)
+        logger.info(
+            "compare_agent.cache_usage",
+            cache_read=cache_read,
+            cache_creation=cache_creation,
+            uncached_input=usage.input_tokens,
+        )
 
     return "".join(chunks), all_citations
 
