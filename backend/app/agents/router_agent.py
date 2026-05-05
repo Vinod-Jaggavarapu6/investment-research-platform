@@ -5,6 +5,7 @@ import structlog
 
 from ..state import AgentState
 from ..clients import get_openai_async
+from ..utils.ticker import validate_ticker, validate_tickers, InvalidTickerError
 
 logger = structlog.get_logger(__name__)
 
@@ -107,15 +108,27 @@ async def router_node(state: AgentState) -> dict:
             logger.warning("router.invalid_route", route=route, fallback="both")
             route = "both"
 
-        # Normalise: compare must have a tickers list
+        # Validate and normalise ticker(s) — raises InvalidTickerError on bad input,
+        # which we catch below and treat as "no ticker resolved".
         if route == "compare":
             if not isinstance(tickers, list) or len(tickers) < 2:
                 logger.warning("router.compare_insufficient_tickers", tickers=tickers, fallback="filings")
                 route = "filings"
                 tickers = None
             else:
-                tickers = [t.upper() for t in tickers]
-                ticker  = None
+                try:
+                    tickers = validate_tickers(tickers)
+                except InvalidTickerError as e:
+                    logger.warning("router.invalid_tickers", error=str(e), fallback="filings")
+                    route = "filings"
+                    tickers = None
+                ticker = None
+        elif ticker:
+            try:
+                ticker = validate_ticker(ticker)
+            except InvalidTickerError as e:
+                logger.warning("router.invalid_ticker", error=str(e))
+                ticker = None
 
         # Follow-up fallback: apply AFTER normalisation so we see the final route.
         # "compare" in the question text (e.g. "how does that compare...") can

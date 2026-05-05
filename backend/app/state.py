@@ -1,20 +1,30 @@
 from typing import Optional, Literal
-from typing_extensions import TypedDict
+from typing_extensions import TypedDict, Required, NotRequired
+
+RouteType = Literal[
+    "market", "filings", "filings_recent", "both",
+    "news", "comprehensive", "compare", "general",
+]
 
 
 class AgentState(TypedDict, total=False):
-    question:       str
-    route:          Optional[Literal["market", "filings", "filings_recent", "both", "news", "comprehensive", "compare", "general"]]
-    ticker:         Optional[str]
-    tickers:        Optional[list[str]]
-    market_output:  Optional[str]
-    filings_output: Optional[str]
-    news_output:    Optional[str]
-    citations:      Optional[list[dict]]
-    final_answer:   Optional[str]
-    skip_cache:     Optional[bool]
-    ingest_pending: Optional[bool]
-    messages:       Optional[list[dict]]  #   [{role,                                                                                                                                                
+    question:       Required[str]
+    route:          NotRequired[Optional[RouteType]]
+    ticker:         NotRequired[Optional[str]]
+    tickers:        NotRequired[Optional[list[str]]]
+    market_output:  NotRequired[Optional[str]]
+    filings_output: NotRequired[Optional[str]]
+    news_output:    NotRequired[Optional[str]]
+    citations:      NotRequired[Optional[list[dict]]]
+    final_answer:   NotRequired[Optional[str]]
+    skip_cache:     NotRequired[Optional[bool]]
+    ingest_pending: NotRequired[Optional[bool]]
+    messages:       NotRequired[Optional[list[dict]]]  # [{role, content}, ...]
+    # Keyed by node name (e.g. "market_agent"). Set by node_error() so the
+    # synthesizer can surface failures to the user instead of silently degrading.
+    agent_errors:   NotRequired[Optional[dict[str, str]]]
+
+
 # App-lifetime singletons set during lifespan startup
 checkpointer = None
 cache = None

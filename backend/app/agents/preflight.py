@@ -20,7 +20,7 @@ def make_data_preflight_node(db: AsyncSession):
                 return {}
 
             route  = state.get("route", "comprehensive")
-            ticker = (state.get("ticker") or "").upper()
+            ticker = state.get("ticker") or ""
 
             if route not in FILINGS_ROUTES or not ticker:
                 logger.info("preflight.passthrough", route=route, ticker=ticker, reason="no_filings_needed")

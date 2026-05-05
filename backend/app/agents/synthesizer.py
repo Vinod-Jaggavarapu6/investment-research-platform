@@ -75,6 +75,27 @@ def make_synthesizer_node(
             if state.get("news_output"):
                 parts.append(f"## Recent News Sentiment\n{state['news_output']}")
 
+            # Append a note for any agents that failed so the synthesizer can
+            # tell the user which sources are absent and why, rather than just
+            # producing a silently incomplete answer.
+            agent_errors = state.get("agent_errors") or {}
+            if agent_errors:
+                _agent_labels = {
+                    "market_agent":   "live market data",
+                    "filings_agent":  "SEC filing research",
+                    "news_agent":     "news sentiment",
+                    "synthesizer":    "synthesis",
+                }
+                failed = "; ".join(
+                    f"{_agent_labels.get(k, k)} ({v})" for k, v in agent_errors.items()
+                )
+                parts.append(
+                    f"## Data Availability Note\n"
+                    f"The following sources failed to load and are not included above: {failed}. "
+                    f"Answer only from the sources present. "
+                    f"Briefly acknowledge the missing data in your response."
+                )
+
             sources = [
                 k for k, present in {
                     "market": bool(state.get("market_output")),
@@ -87,6 +108,7 @@ def make_synthesizer_node(
                 ticker=state.get("ticker"),
                 route=state.get("route"),
                 sources=sources,
+                failed_agents=list(agent_errors.keys()),
                 model=MODEL,
             )
 

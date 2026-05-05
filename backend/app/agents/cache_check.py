@@ -12,7 +12,7 @@ logger = structlog.get_logger(__name__)
 def make_cache_check_node(cache, on_token: Callable[[str], Awaitable[None]] | None):
     async def cache_check_node(state: AgentState) -> dict:
         try:
-            ticker   = (state.get("ticker") or "").upper()
+            ticker   = state.get("ticker") or ""
             question = state.get("question", "")
             if not cache or not ticker:
                 return {}
