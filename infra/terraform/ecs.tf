@@ -101,9 +101,10 @@ resource "aws_ecs_task_definition" "backend" {
       # These reference Terraform outputs — filled in automatically
       { name = "REDIS_HOST",    value = aws_elasticache_cluster.redis.cache_nodes[0].address },
       { name = "DATABASE_URL",  value = "postgresql+asyncpg://postgres:${var.db_password}@${aws_db_instance.postgres.endpoint}/investment_research" },
-      # In aws_ecs_task_definition.backend, add to environment block:
-      { name = "S3_BUCKET",  value = "investment-research-app-data-244689413519" },
-      { name = "AWS_REGION", value = "us-east-1" },
+      # Observability
+      { name = "LOG_FORMAT",     value = "json" },
+      { name = "APP_ENV",        value = "production" },
+      { name = "OTLP_ENDPOINT",  value = "http://jaeger.investment-research.local:4317" },
     ]
 
     # Secret config — pulled from Secrets Manager at container start
@@ -188,8 +189,6 @@ resource "aws_ecs_task_definition" "indexer" {
 
     environment = [
       { name = "DATABASE_URL", value = "postgresql+asyncpg://postgres:${var.db_password}@${aws_db_instance.postgres.endpoint}/investment_research" },
-      { name = "S3_BUCKET",    value = "investment-research-app-data-244689413519" },
-      { name = "AWS_REGION",   value = "us-east-1" },
     ]
 
     secrets = [
@@ -227,6 +226,11 @@ resource "aws_ecs_service" "backend" {
     container_port   = 8000
   }
 
+  # Cloud Map — lets Prometheus discover this task by DNS
+  service_registries {
+    registry_arn = aws_service_discovery_service.backend.arn
+  }
+
   # Auto rollback if new deployment fails health checks
   deployment_circuit_breaker {
     enable   = true
@@ -258,19 +262,3 @@ resource "aws_ecs_service" "frontend" {
   depends_on = [aws_lb_listener.http]
 }
 
-resource "aws_iam_role_policy" "ecs_s3" {
-  name = "${var.project}-ecs-s3"
-  role = aws_iam_role.ecs_task.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "s3:GetObject",   # backend needs this to download index on startup
-        "s3:PutObject",   # indexer needs this to upload new index after build
-      ]
-      Resource = "arn:aws:s3:::investment-research-app-data-244689413519/faiss/*"
-    }]
-  })
-}

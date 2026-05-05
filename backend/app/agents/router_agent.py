@@ -1,10 +1,14 @@
 import json
 import os
-from ..state import AgentState
-from langsmith.wrappers import wrap_openai
-from openai import AsyncOpenAI
 
-client = wrap_openai(AsyncOpenAI())
+import structlog
+
+from ..state import AgentState
+from ..clients import get_openai_async
+from ..utils.ticker import validate_ticker, validate_tickers, InvalidTickerError
+
+logger = structlog.get_logger(__name__)
+
 MODEL = os.getenv("ROUTER_AGENT_MODEL", "gpt-4o-mini")
 
 ROUTER_SYSTEM = """You are a question classifier for a financial research platform.
@@ -18,6 +22,9 @@ ROUTES — pick exactly one:
   "both"            → live market data AND SEC filings for ONE company
   "comprehensive"   → market data, SEC filings, AND news for ONE company
   "compare"         → comparing TWO OR MORE companies against each other
+  "general"         → question is NOT about a specific company's financials:
+                      generic financial concepts, off-topic questions, math, trivia,
+                      or any question with no discernible financial company target
 
 TICKER FIELDS:
   For single-company routes: return "ticker" (string) and "tickers" (null)
@@ -40,6 +47,10 @@ Examples:
   "Is NVDA valuation justified vs guidance?"       → {"route": "both",    "ticker": "NVDA", "tickers": null}
   "Full picture of AAPL"                           → {"route": "comprehensive", "ticker": "AAPL", "tickers": null}
   "Which semiconductor company has better margins?"→ {"route": "filings", "ticker": null,   "tickers": null}
+  "what's 2 + 2?"                                  → {"route": "general",  "ticker": null,   "tickers": null}
+  "what is P/E ratio?"                             → {"route": "general",  "ticker": null,   "tickers": null}
+  "explain what EBITDA means"                      → {"route": "general",  "ticker": null,   "tickers": null}
+  "tell me a joke"                                 → {"route": "general",  "ticker": null,   "tickers": null}
 
 ROUTE SIGNALS:
   MARKET:          "What is X's price/P/E/margin/revenue/market cap?" — plain metric lookup
@@ -53,7 +64,7 @@ ROUTE SIGNALS:
 Respond with ONLY valid JSON. No preamble, no explanation, no markdown code fences.
 """
 
-VALID_ROUTES = {"market", "filings", "filings_recent", "both", "news", "comprehensive", "compare"}
+VALID_ROUTES = {"market", "filings", "filings_recent", "both", "news", "comprehensive", "compare", "general"}
 
 
 async def router_node(state: AgentState) -> dict:
@@ -70,7 +81,7 @@ async def router_node(state: AgentState) -> dict:
             f"was about {prev_ticker}]\n\n{state['question']}"
         )
 
-    response = await client.chat.completions.create(
+    response = await get_openai_async().chat.completions.create(
         model=MODEL,
         max_completion_tokens=100,
         messages=[
@@ -80,7 +91,6 @@ async def router_node(state: AgentState) -> dict:
     )
 
     raw = response.choices[0].message.content.strip()
-    print(f"[ROUTER DEBUG] raw LLM output: {raw!r}", flush=True)
 
     if raw.startswith("```"):
         raw = raw.split("```")[1]
@@ -95,34 +105,54 @@ async def router_node(state: AgentState) -> dict:
         tickers = parsed.get("tickers")
 
         if route not in VALID_ROUTES:
+            logger.warning("router.invalid_route", route=route, fallback="both")
             route = "both"
 
-        # Normalise: compare must have a tickers list
+        # Validate and normalise ticker(s) — raises InvalidTickerError on bad input,
+        # which we catch below and treat as "no ticker resolved".
         if route == "compare":
             if not isinstance(tickers, list) or len(tickers) < 2:
-                route = "filings"   # fall back gracefully
+                logger.warning("router.compare_insufficient_tickers", tickers=tickers, fallback="filings")
+                route = "filings"
                 tickers = None
             else:
-                tickers = [t.upper() for t in tickers]
-                ticker  = None
+                try:
+                    tickers = validate_tickers(tickers)
+                except InvalidTickerError as e:
+                    logger.warning("router.invalid_tickers", error=str(e), fallback="filings")
+                    route = "filings"
+                    tickers = None
+                ticker = None
+        elif ticker:
+            try:
+                ticker = validate_ticker(ticker)
+            except InvalidTickerError as e:
+                logger.warning("router.invalid_ticker", error=str(e))
+                ticker = None
 
         # Follow-up fallback: apply AFTER normalisation so we see the final route.
         # "compare" in the question text (e.g. "how does that compare...") can
         # briefly set route="compare" before normalisation downgrades it to "filings".
-        # Guard: only fire when no ticker AND no tickers list were resolved.
-        if not ticker and not tickers and prev_ticker:
+        # Guard: only fire when no ticker AND no tickers list were resolved, and the
+        # question is not a general off-topic one (we don't want to inject a ticker
+        # into a math question just because the prior turn was about AAPL).
+        if not ticker and not tickers and prev_ticker and route != "general":
             ticker = prev_ticker
 
+        logger.info("router.classified", route=route, ticker=ticker, tickers=tickers)
+
     except json.JSONDecodeError:
+        logger.warning("router.parse_failed", raw_preview=raw[:200])
         route   = "both"
         ticker  = None
         tickers = None
 
-    print(f"[ROUTER DEBUG] returning route={route!r} ticker={ticker!r} tickers={tickers!r}", flush=True)
-
     return {
         "route":          route,
-        "ticker":         ticker,
+        # For general turns preserve the prior investment ticker so the follow-up
+        # chain survives: Turn 1 (AAPL) → Turn 2 (off-topic) → Turn 3 (news?) still
+        # has prev_ticker="AAPL" available for the router's context prepend.
+        "ticker":         prev_ticker if route == "general" else ticker,
         "tickers":        tickers,
         # Clear previous turn's outputs so agents always run fresh
         "final_answer":   None,

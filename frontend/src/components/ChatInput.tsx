@@ -1,4 +1,5 @@
 import { useState, type FormEvent, type KeyboardEvent } from "react";
+import { colors } from "../theme";
 
 interface Props {
   onSubmit: (question: string) => void;
@@ -74,9 +75,9 @@ const styles: Record<string, React.CSSProperties> = {
   inputRow: {
     display: "flex",
     alignItems: "center",
-    border: "1.5px solid #d1d5db",
+    border: `1.5px solid ${colors.borderMuted}`,
     borderRadius: "12px",
-    background: "#fff",
+    background: colors.white,
     padding: "6px 6px 6px 16px",
     gap: "8px",
     transition: "border-color 0.15s",
@@ -89,15 +90,15 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "15px",
     background: "transparent",
     fontFamily: "inherit",
-    color: "#111827",
+    color: colors.textPrimary,
     lineHeight: "1.5",
   },
   sendBtn: {
     width: "34px",
     height: "34px",
     borderRadius: "8px",
-    background: "#111827",
-    color: "#fff",
+    background: colors.textPrimary,
+    color: colors.white,
     border: "none",
     fontSize: "16px",
     display: "flex",

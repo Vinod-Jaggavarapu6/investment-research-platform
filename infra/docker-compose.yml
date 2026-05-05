@@ -11,11 +11,15 @@ services:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - LOG_FORMAT=json
+      - OTLP_ENDPOINT=http://jaeger:4317
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+      jaeger:
+        condition: service_started
     volumes:
       - ../backend/app:/app/app
       - ../backend/data:/app/data
@@ -64,5 +68,91 @@ services:
       timeout: 3s
       retries: 5
 
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC ingest
+      - "4318:4318"    # OTLP HTTP ingest
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --tries=1 -O- http://localhost:16686/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+      - "--web.enable-remote-write-receiver"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --tries=1 -O- http://localhost:9090/-/healthy || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  loki:
+    image: grafana/loki:3.0.0
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki/config.yml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --tries=1 -O- http://localhost:3100/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  promtail:
+    image: grafana/promtail:3.0.0
+    volumes:
+      - ./promtail/config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      loki:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+      - GF_FEATURE_TOGGLES_ENABLE=lokiLogsDataplane
+    depends_on:
+      loki:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --tries=1 -O- http://localhost:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
 volumes:
   postgres_data:
+  prometheus_data:
+  jaeger_data:
+  loki_data:
+  grafana_data:

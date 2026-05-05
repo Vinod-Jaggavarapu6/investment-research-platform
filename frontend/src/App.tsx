@@ -3,11 +3,12 @@ import { useResearchStream } from "./useResearchStream";
 import { useConversations } from "./useConversations";
 import { ConversationSidebar } from "./components/ConversationSidebar";
 import { ChatWindow } from "./components/ChatWindow";
+import { colors } from "./theme";
 import type { Message } from "./types";
 
 export default function App() {
   const { state, start, reset, sessionId } = useResearchStream();
-  const { conversations, refresh, loadMessages, deleteConversation } =
+  const { conversations, refresh, loadMessages, deleteConversation, networkError, clearNetworkError } =
     useConversations(sessionId);
 
   const [activeConversationId, setActiveConversationId] = useState<
@@ -55,14 +56,16 @@ export default function App() {
   const handleDelete = useCallback(
     async (id: string) => {
       await deleteConversation(id);
-      if (id === activeConversationId) {
+      // Also check state.conversationId: if conversation_ready hasn't fired yet,
+      // activeConversationId is still null but the stream is already tied to this id.
+      if (id === activeConversationId || id === state?.conversationId) {
         reset();
         setActiveConversationId(null);
         setHistoryMessages([]);
         setPendingQuestion(null);
       }
     },
-    [deleteConversation, activeConversationId, reset],
+    [deleteConversation, activeConversationId, state?.conversationId, reset],
   );
 
   const handleStart = useCallback(
@@ -77,10 +80,11 @@ export default function App() {
     <div style={styles.page}>
       <header style={styles.header}>
         <h1 style={styles.title}>Investment Research</h1>
-        {/* <p style={styles.sub}>
-          Multi-agent · SEC filings · Live market data · News sentiment
-        </p> */}
       </header>
+
+      {networkError && (
+        <ErrorToast message={networkError} onDismiss={clearNetworkError} />
+      )}
 
       <div style={styles.body}>
         <ConversationSidebar
@@ -105,19 +109,53 @@ export default function App() {
   );
 }
 
+function ErrorToast({ message, onDismiss }: { message: string; onDismiss: () => void }) {
+  return (
+    <div style={toastStyles.toast}>
+      <span style={toastStyles.icon}>⚠</span>
+      <span style={toastStyles.text}>{message}</span>
+      <button style={toastStyles.close} onClick={onDismiss} aria-label="Dismiss">✕</button>
+    </div>
+  );
+}
+
+const toastStyles: Record<string, React.CSSProperties> = {
+  toast: {
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    padding: "10px 16px",
+    background: colors.errorBg,
+    borderBottom: `1px solid ${colors.errorBorder}`,
+    flexShrink: 0,
+  },
+  icon: { color: colors.error, fontSize: "14px", flexShrink: 0 },
+  text: { flex: 1, fontSize: "13px", color: colors.errorText },
+  close: {
+    background: "none",
+    border: "none",
+    cursor: "pointer",
+    color: colors.errorText,
+    fontSize: "13px",
+    padding: "0 2px",
+    lineHeight: 1,
+    flexShrink: 0,
+  },
+};
+
 const styles: Record<string, React.CSSProperties> = {
   page: {
     height: "100vh",
     display: "flex",
     flexDirection: "column",
     fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-    color: "#111827",
-    background: "#f9fafb",
+    color: colors.textPrimary,
+    background: colors.bgPage,
   },
   header: {
     padding: "14px 24px",
-    borderBottom: "1px solid #e5e7eb",
-    background: "#fff",
+    borderBottom: `1px solid ${colors.border}`,
+    background: colors.white,
     flexShrink: 0,
     display: "flex",
     alignItems: "center",
@@ -128,11 +166,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "17px",
     fontWeight: "700",
     letterSpacing: "-0.01em",
-  },
-  sub: {
-    margin: 0,
-    fontSize: "12px",
-    color: "#9ca3af",
   },
   body: {
     display: "flex",

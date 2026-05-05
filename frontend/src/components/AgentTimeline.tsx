@@ -2,6 +2,11 @@ import { useEffect, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ResearchState, NodeName, NodeStatus, Citation } from "../types";
+import { colors } from "../theme";
+
+const THINKING_DOTS_INTERVAL_MS = 450;
+const INGEST_DOTS_INTERVAL_MS = 1000;
+const ELAPSED_UPDATE_INTERVAL_MS = 100;
 
 interface Props {
   research: ResearchState;
@@ -65,9 +70,18 @@ export function AgentTimeline({ research }: Props) {
 
       {phase === "done" && !ingestPending && elapsed > 0 && (
         <div style={styles.completeLine}>
-          <span style={{ ...styles.icon, color: "#10b981" }}>✓</span>
+          <span style={{ ...styles.icon, color: colors.success }}>✓</span>
           <span style={styles.completeText}>
             Research complete · {(elapsed / 1000).toFixed(1)}s
+          </span>
+        </div>
+      )}
+
+      {phase === "error" && (
+        <div style={styles.errorLine}>
+          <span style={{ ...styles.icon, color: colors.error }}>✕</span>
+          <span style={styles.errorText}>
+            {research.errorMsg ?? "Something went wrong. Please try again."}
           </span>
         </div>
       )}
@@ -88,26 +102,30 @@ interface LineProps {
 function LogLine({ node, status, data, tokens, ticker }: LineProps) {
   const isRunning = status === "running";
   const isDone = status === "done";
+  const isError = status === "error";
 
   // Strip trailing ellipsis — ThinkingDots replaces it when running
   const raw = activityMessage(node, status, ticker, data);
   const message = isRunning ? raw.replace(/…$/, "") : raw;
 
+  const iconColor: string = isRunning
+    ? colors.warning
+    : isDone
+      ? colors.success
+      : isError
+        ? colors.error
+        : colors.borderMuted;
+
   return (
     <div style={styles.line}>
       <div style={styles.lineHeader}>
-        <span
-          style={{
-            ...styles.icon,
-            color: isRunning ? "#f59e0b" : isDone ? "#10b981" : "#d1d5db",
-          }}
-        >
-          {isRunning ? <PulsingDot /> : isDone ? "✓" : "○"}
+        <span style={{ ...styles.icon, color: iconColor }}>
+          {isRunning ? <PulsingDot /> : isDone ? "✓" : isError ? "✕" : "○"}
         </span>
         <span
           style={{
             ...styles.lineText,
-            color: isDone ? "#9ca3af" : "#111827",
+            color: isDone ? colors.textFaint : isError ? colors.errorText : colors.textPrimary,
             animation:
               isRunning && !tokens ? "pulse 2s ease-in-out infinite" : "none",
           }}
@@ -131,7 +149,7 @@ function LogLine({ node, status, data, tokens, ticker }: LineProps) {
 
 // ── Pulsing dot (icon for running state) ──────────────────────────────────
 
-function PulsingDot({ color = "#f59e0b" }: { color?: string }) {
+function PulsingDot({ color = colors.warning }: { color?: string }) {
   return (
     <span
       style={{
@@ -151,13 +169,13 @@ function PulsingDot({ color = "#f59e0b" }: { color?: string }) {
 function ThinkingDots() {
   const [frame, setFrame] = useState(0);
   useEffect(() => {
-    const id = setInterval(() => setFrame((f) => (f + 1) % 4), 450);
+    const id = setInterval(() => setFrame((f) => (f + 1) % 4), THINKING_DOTS_INTERVAL_MS);
     return () => clearInterval(id);
   }, []);
   const dots = ["", ".", "..", "..."][frame];
   return (
     <span
-      style={{ color: "#9ca3af", letterSpacing: "0.05em", marginLeft: "1px" }}
+      style={{ color: colors.textFaint, letterSpacing: "0.05em", marginLeft: "1px" }}
     >
       {dots}
     </span>
@@ -176,7 +194,7 @@ function useElapsed(
     if (!startedAt || completedAt) return;
     const id = setInterval(
       () => setRunningElapsed(Date.now() - startedAt),
-      100,
+      ELAPSED_UPDATE_INTERVAL_MS,
     );
     return () => clearInterval(id);
   }, [startedAt, completedAt]);
@@ -195,6 +213,19 @@ function activityMessage(
   data?: Record<string, unknown> | null,
 ): string {
   const t = ticker?.toUpperCase() ?? "your stock";
+
+  if (status === "error") {
+    const reason = data?.reason as string | undefined;
+    const suffix = reason ? ` · ${reason}` : "";
+    switch (node) {
+      case "router":       return `Router failed${suffix}`;
+      case "market_agent": return `Market data unavailable${suffix}`;
+      case "filings_agent":return `SEC filings unavailable${suffix}`;
+      case "news_agent":   return `News data unavailable${suffix}`;
+      case "synthesizer":  return `Report generation failed${suffix}`;
+      case "compare_agent":return `Comparison failed${suffix}`;
+    }
+  }
 
   switch (node) {
     case "router": {
@@ -241,7 +272,7 @@ function activityMessage(
 function IngestPollingLine({ ticker }: { ticker: string }) {
   const [dots, setDots] = useState(0);
   useEffect(() => {
-    const id = setInterval(() => setDots((d) => (d + 1) % 4), 1000);
+    const id = setInterval(() => setDots((d) => (d + 1) % 4), INGEST_DOTS_INTERVAL_MS);
     return () => clearInterval(id);
   }, []);
   const dotStr = ".".repeat(dots);
@@ -249,7 +280,7 @@ function IngestPollingLine({ ticker }: { ticker: string }) {
   return (
     <div style={styles.ingestNotice}>
       <div style={styles.ingestHeader}>
-        <PulsingDot color="#6366f1" />
+        <PulsingDot color={colors.brand} />
         <span style={styles.ingestTitle}>
           Indexing {ticker.toUpperCase()} SEC filings{dotStr}
         </span>
@@ -282,6 +313,14 @@ function CitationsBlock({ citations }: { citations: Citation[] }) {
         {unique.map((c, i) => (
           <span key={i} style={styles.citationChip}>
             {c.ticker} {c.year} · {c.filing_type} · {c.section}
+            <span style={{
+              marginLeft: "6px",
+              fontSize: "11px",
+              fontWeight: 600,
+              color: c.score >= 0.80 ? "#16a34a" : c.score >= 0.65 ? "#ca8a04" : "#dc2626",
+            }}>
+              {Math.round(c.score * 100)}%
+            </span>
           </span>
         ))}
       </div>
@@ -307,16 +346,16 @@ const markdownComponents = {
     </div>
   ),
   thead: ({ children }: { children?: React.ReactNode }) => (
-    <thead style={{ background: "#f3f4f6" }}>{children}</thead>
+    <thead style={{ background: colors.bgLight }}>{children}</thead>
   ),
   th: ({ children }: { children?: React.ReactNode }) => (
     <th
       style={{
         padding: "8px 12px",
-        border: "1px solid #e5e7eb",
+        border: `1px solid ${colors.border}`,
         fontWeight: 600,
         textAlign: "left",
-        color: "#111827",
+        color: colors.textPrimary,
         whiteSpace: "nowrap",
       }}
     >
@@ -327,8 +366,8 @@ const markdownComponents = {
     <td
       style={{
         padding: "7px 12px",
-        border: "1px solid #e5e7eb",
-        color: "#374151",
+        border: `1px solid ${colors.border}`,
+        color: colors.textSecondary,
         verticalAlign: "top",
       }}
     >
@@ -336,7 +375,7 @@ const markdownComponents = {
     </td>
   ),
   tr: ({ children }: { children?: React.ReactNode }) => (
-    <tr style={{ borderBottom: "1px solid #e5e7eb" }}>{children}</tr>
+    <tr style={{ borderBottom: `1px solid ${colors.border}` }}>{children}</tr>
   ),
 };
 
@@ -372,15 +411,15 @@ const styles: Record<string, React.CSSProperties> = {
   reportArea: {
     marginLeft: "26px",
     paddingLeft: "16px",
-    borderLeft: "2px solid #e5e7eb",
+    borderLeft: `2px solid ${colors.border}`,
     fontSize: "14px",
     lineHeight: "1.7",
-    color: "#374151",
+    color: colors.textSecondary,
   },
   cursor: {
     display: "inline-block",
     animation: "blink 1s step-end infinite",
-    color: "#6b7280",
+    color: colors.textMuted,
     verticalAlign: "text-bottom",
   },
   completeLine: {
@@ -389,19 +428,32 @@ const styles: Record<string, React.CSSProperties> = {
     gap: "10px",
     paddingTop: "12px",
     marginTop: "4px",
-    borderTop: "1px solid #f3f4f6",
+    borderTop: `1px solid ${colors.bgLight}`,
   },
   completeText: {
     fontSize: "13px",
-    color: "#6b7280",
+    color: colors.textMuted,
+    fontWeight: 500,
+  },
+  errorLine: {
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    paddingTop: "12px",
+    marginTop: "4px",
+    borderTop: `1px solid ${colors.errorDivider}`,
+  },
+  errorText: {
+    fontSize: "13px",
+    color: colors.errorText,
     fontWeight: 500,
   },
   ingestNotice: {
     marginTop: "8px",
     padding: "12px 14px",
     borderRadius: "8px",
-    background: "#eef2ff",
-    border: "1px solid #c7d2fe",
+    background: colors.brandBg,
+    border: `1px solid ${colors.brandBorder}`,
   },
   ingestHeader: {
     display: "flex",
@@ -412,18 +464,18 @@ const styles: Record<string, React.CSSProperties> = {
   ingestTitle: {
     fontSize: "13px",
     fontWeight: 600,
-    color: "#4338ca",
+    color: colors.brandDark,
   },
   ingestBody: {
     margin: 0,
     fontSize: "13px",
-    color: "#4b5563",
+    color: colors.textSecondary,
     lineHeight: 1.55,
   },
   citationsBlock: {
     marginLeft: "26px",
     paddingLeft: "16px",
-    borderLeft: "2px solid #e5e7eb",
+    borderLeft: `2px solid ${colors.border}`,
     display: "flex",
     flexDirection: "column",
     gap: "8px",
@@ -433,7 +485,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     textTransform: "uppercase" as const,
     letterSpacing: "0.06em",
-    color: "#9ca3af",
+    color: colors.textFaint,
   },
   citationsList: {
     display: "flex",
@@ -442,9 +494,9 @@ const styles: Record<string, React.CSSProperties> = {
   },
   citationChip: {
     fontSize: "12px",
-    color: "#374151",
-    background: "#f3f4f6",
-    border: "1px solid #e5e7eb",
+    color: colors.textSecondary,
+    background: colors.bgLight,
+    border: `1px solid ${colors.border}`,
     borderRadius: "4px",
     padding: "2px 8px",
     whiteSpace: "nowrap" as const,

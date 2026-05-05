@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import type { Message, ResearchState } from "../types";
 import { AgentTimeline } from "./AgentTimeline";
 import { ChatInput } from "./ChatInput";
+import { colors } from "../theme";
 
 interface Props {
   messages: Message[];
@@ -54,10 +55,10 @@ export function ChatWindow({
             {/* Current in-flight exchange */}
             {pendingQuestion && <UserMessage text={pendingQuestion} live />}
 
-            {/* AgentTimeline: show while streaming OR while waiting for DB messages to load.
+            {/* AgentTimeline: show while streaming, on error, or while waiting for DB messages to load.
                 pendingQuestion is cleared in the same batch as setHistoryMessages, so hiding
                 on pendingQuestion===null guarantees history is already populated — no flash. */}
-            {streamingState && (streamingState.phase === "streaming" || pendingQuestion !== null) && (
+            {streamingState && (streamingState.phase === "streaming" || streamingState.phase === "error" || pendingQuestion !== null) && (
               <div style={styles.agentBlock}>
                 <AgentTimeline research={streamingState} />
               </div>
@@ -67,7 +68,7 @@ export function ChatWindow({
             {streamingState?.phase === "done" && pendingQuestion === null &&
               streamingState.completedAt && streamingState.startedAt && (
               <div style={styles.completeLine}>
-                <span style={{ color: "#10b981", fontSize: "13px" }}>✓</span>
+                <span style={{ color: colors.success, fontSize: "13px" }}>✓</span>
                 <span style={styles.completeText}>
                   Research completed in {((streamingState.completedAt - streamingState.startedAt) / 1000).toFixed(1)}s
                 </span>
@@ -135,8 +136,8 @@ function UserMessage({ text, live }: { text: string; live?: boolean }) {
       <div
         style={{
           ...styles.userBubble,
-          border: live ? "1px solid #c7d2fe" : "1px solid #e5e7eb",
-          background: live ? "#f5f3ff" : "#f9fafb",
+          border: `1px solid ${live ? colors.brandBorder : colors.border}`,
+          background: live ? colors.brandBgSoft : colors.bgPage,
         }}
       >
         {text}
@@ -148,7 +149,7 @@ function UserMessage({ text, live }: { text: string; live?: boolean }) {
 function AssistantMessage({ content }: { content: string }) {
   return (
     <div style={styles.assistantMsg}>
-      <span style={{ ...styles.roleLabel, color: "#6366f1" }}>Research</span>
+      <span style={{ ...styles.roleLabel, color: colors.brand }}>Research</span>
       <div style={styles.assistantBubble}>
         <Markdown
           remarkPlugins={[remarkGfm]}
@@ -172,20 +173,20 @@ const markdownComponents = {
     </div>
   ),
   thead: ({ children }: { children?: React.ReactNode }) => (
-    <thead style={{ background: "#f3f4f6" }}>{children}</thead>
+    <thead style={{ background: colors.bgLight }}>{children}</thead>
   ),
   th: ({ children }: { children?: React.ReactNode }) => (
-    <th style={{ padding: "8px 12px", border: "1px solid #e5e7eb", fontWeight: 600, textAlign: "left" }}>
+    <th style={{ padding: "8px 12px", border: `1px solid ${colors.border}`, fontWeight: 600, textAlign: "left" }}>
       {children}
     </th>
   ),
   td: ({ children }: { children?: React.ReactNode }) => (
-    <td style={{ padding: "7px 12px", border: "1px solid #e5e7eb", verticalAlign: "top" }}>
+    <td style={{ padding: "7px 12px", border: `1px solid ${colors.border}`, verticalAlign: "top" }}>
       {children}
     </td>
   ),
   tr: ({ children }: { children?: React.ReactNode }) => (
-    <tr style={{ borderBottom: "1px solid #e5e7eb" }}>{children}</tr>
+    <tr style={{ borderBottom: `1px solid ${colors.border}` }}>{children}</tr>
   ),
 };
 
@@ -196,7 +197,7 @@ const styles: Record<string, React.CSSProperties> = {
     height: "100%",
     display: "flex",
     flexDirection: "column",
-    background: "#f9fafb",
+    background: colors.bgPage,
   },
   messages: {
     flex: 1,
@@ -211,8 +212,8 @@ const styles: Record<string, React.CSSProperties> = {
     gap: "28px",
   },
   agentBlock: {
-    background: "#fff",
-    border: "1px solid #e5e7eb",
+    background: colors.white,
+    border: `1px solid ${colors.border}`,
     borderRadius: "12px",
     padding: "20px 24px",
   },
@@ -224,13 +225,13 @@ const styles: Record<string, React.CSSProperties> = {
   },
   completeText: {
     fontSize: "13px",
-    color: "#6b7280",
+    color: colors.textMuted,
     fontWeight: 500,
   },
   inputBar: {
     flexShrink: 0,
-    borderTop: "1px solid #e5e7eb",
-    background: "#fff",
+    borderTop: `1px solid ${colors.border}`,
+    background: colors.white,
     padding: "14px 24px 18px",
   },
   inputWrap: {
@@ -259,12 +260,12 @@ const styles: Record<string, React.CSSProperties> = {
     margin: 0,
     fontSize: "22px",
     fontWeight: "700",
-    color: "#111827",
+    color: colors.textPrimary,
   },
   emptySub: {
     margin: 0,
     fontSize: "14px",
-    color: "#6b7280",
+    color: colors.textMuted,
     lineHeight: 1.6,
   },
   emptyInput: {
@@ -281,10 +282,10 @@ const styles: Record<string, React.CSSProperties> = {
   suggestionChip: {
     fontSize: "13px",
     padding: "7px 13px",
-    border: "1px solid #e5e7eb",
+    border: `1px solid ${colors.border}`,
     borderRadius: "20px",
-    background: "#fff",
-    color: "#374151",
+    background: colors.white,
+    color: colors.textSecondary,
     cursor: "pointer",
     fontFamily: "inherit",
     lineHeight: 1.4,
@@ -303,7 +304,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "12px 16px",
     fontSize: "15px",
     lineHeight: "1.55",
-    color: "#111827",
+    color: colors.textPrimary,
     fontWeight: "500",
     maxWidth: "100%",
   },
@@ -313,20 +314,20 @@ const styles: Record<string, React.CSSProperties> = {
     gap: "6px",
   },
   assistantBubble: {
-    background: "#fff",
-    border: "1px solid #e5e7eb",
+    background: colors.white,
+    border: `1px solid ${colors.border}`,
     borderRadius: "12px",
     padding: "20px 24px",
     fontSize: "14px",
     lineHeight: "1.75",
-    color: "#374151",
+    color: colors.textSecondary,
   },
   roleLabel: {
     fontSize: "11px",
     fontWeight: "600",
     textTransform: "uppercase" as const,
     letterSpacing: "0.06em",
-    color: "#9ca3af",
+    color: colors.textFaint,
     paddingLeft: "4px",
   },
 };

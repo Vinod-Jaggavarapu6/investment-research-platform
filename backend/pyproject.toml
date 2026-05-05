@@ -29,7 +29,15 @@ dependencies = [
     "psycopg[binary]>=3.3.3",
     "finnhub-python>=2.4.28",
     "sse-starlette>=3.3.4",
-    "boto3>=1.42.95",
+    "structlog>=24.0.0",
+    "prometheus-client>=0.20.0",
+    "prometheus-fastapi-instrumentator>=6.1.0",
+    "opentelemetry-sdk>=1.24.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.24.0",
+    "opentelemetry-instrumentation-fastapi>=0.45b0",
+    "opentelemetry-instrumentation-sqlalchemy>=0.45b0",
+    "opentelemetry-instrumentation-redis>=0.45b0",
+    "sentry-sdk[fastapi]>=2.0.0",
 ]
 
 [project.optional-dependencies]

@@ -5,6 +5,7 @@ import {
   DEFAULT_VISIBLE_NODES,
   ROUTE_NODES,
 } from "./types";
+import { useIngestPoller } from "./useIngestPoller";
 
 function getOrCreateSessionId(): string {
   const key = "irp_session_id";
@@ -23,16 +24,10 @@ export function useResearchStream() {
   const [state, setState] = useState<ResearchState | null>(null);
   const [sessionId] = useState<string>(() => getOrCreateSessionId());
   const sourceRef = useRef<EventSource | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Ref so the poll callback always calls the latest `start` without stale closure
+  // Ref so the ingest onReady callback always calls the latest `start` without stale closure
   const startFnRef = useRef<(q: string, cid?: string | null) => void>(() => {});
 
-  const stopPolling = useCallback(() => {
-    if (pollRef.current !== null) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, []);
+  const { startPolling, stopPolling } = useIngestPoller();
 
   const close = useCallback(() => {
     sourceRef.current?.close();
@@ -67,70 +62,36 @@ export function useResearchStream() {
 
         if (event.type === "done") {
           console.log(
-            `[stream] done event received — ingesting_ticker=${event.ingesting_ticker ?? "none"} has_report=${Boolean(event.report)}`,
+            `[stream] done — ingesting_ticker=${event.ingesting_ticker ?? "none"} has_report=${Boolean(event.report)}`,
           );
           source.close();
           sourceRef.current = null;
 
           if (event.ingesting_ticker) {
             const ticker = event.ingesting_ticker;
-            const POLL_INTERVAL_MS = 30_000;
-            // Only count "not_found" responses toward the give-up limit.
-            // While status === "ingesting" we keep polling indefinitely —
-            // large companies (e.g. CVX) can take 5-10 min to fully index.
-            let notFoundStreak = 0;
-            const MAX_NOT_FOUND = 4; // give up after ~2 min of no trace of the job
-            console.log(
-              `[ingest] filings not ready for ${ticker} — polling every ${POLL_INTERVAL_MS / 1000}s`,
-            );
-            // ingestPending is already set atomically by applyEvent above —
-            // no separate setState needed here.
-            pollRef.current = setInterval(async () => {
-              try {
-                const res = await fetch(`/ingest/status/${ticker}`);
-                const data: { status: string } = await res.json();
-                console.log(`[ingest] status for ${ticker}: ${data.status}`);
-
-                if (data.status === "ready") {
-                  console.log(`[ingest] ${ticker} filings ready — re-running research`);
-                  stopPolling();
-                  // Read the resolved conversationId from current state so the
-                  // retry reuses the same conversation instead of creating a new one.
-                  setState((prev) => {
-                    const resolvedConvId = prev?.conversationId ?? conversationId ?? null;
-                    setTimeout(() => startFnRef.current(question, resolvedConvId), 0);
-                    return prev ? { ...prev, ingestPending: false } : prev;
-                  });
-
-                } else if (data.status === "ingesting") {
-                  // Still running — reset the not-found streak and keep waiting
-                  notFoundStreak = 0;
-
-                } else {
-                  // "not_found" — ingest may have failed or the server restarted
-                  notFoundStreak += 1;
-                  console.warn(
-                    `[ingest] ${ticker} not found (streak ${notFoundStreak}/${MAX_NOT_FOUND})`,
-                  );
-                  if (notFoundStreak >= MAX_NOT_FOUND) {
-                    console.warn(`[ingest] giving up on ${ticker} — no active ingest job found`);
-                    stopPolling();
-                    setState((prev) =>
-                      prev
-                        ? {
-                            ...prev,
-                            ingestPending: false,
-                            phase: "error",
-                            errorMsg: `Could not index ${ticker} filings. Try asking again manually.`,
-                          }
-                        : prev,
-                    );
-                  }
-                }
-              } catch (err) {
-                console.warn(`[ingest] poll request failed for ${ticker}:`, err);
-              }
-            }, POLL_INTERVAL_MS);
+            startPolling(ticker, {
+              onReady: () => {
+                // Read the resolved conversationId from current state so the retry
+                // reuses the same conversation instead of creating a new one.
+                setState((prev) => {
+                  const resolvedConvId = prev?.conversationId ?? conversationId ?? null;
+                  setTimeout(() => startFnRef.current(question, resolvedConvId), 0);
+                  return prev ? { ...prev, ingestPending: false } : prev;
+                });
+              },
+              onGiveUp: () => {
+                setState((prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        ingestPending: false,
+                        phase: "error",
+                        errorMsg: `Could not index ${ticker} filings. Try asking again manually.`,
+                      }
+                    : prev,
+                );
+              },
+            });
           }
         }
 
@@ -150,10 +111,10 @@ export function useResearchStream() {
         sourceRef.current = null;
       };
     },
-    [close, stopPolling, sessionId],
+    [close, startPolling, sessionId],
   );
 
-  // Keep ref in sync so the poll interval never captures a stale start
+  // Keep ref in sync so the ingest onReady callback never captures a stale start
   useEffect(() => {
     startFnRef.current = start;
   }, [start]);
@@ -177,6 +138,18 @@ function applyEvent(state: ResearchState, event: SSEEvent): ResearchState {
         nodes: {
           ...state.nodes,
           [node]: { ...state.nodes[node], status: "running" },
+        },
+      };
+    }
+
+    case "node_error": {
+      const node = event.node as NodeName;
+      if (!state.nodes[node]) return state;
+      return {
+        ...state,
+        nodes: {
+          ...state.nodes,
+          [node]: { ...state.nodes[node], status: "error", data: { reason: event.reason } },
         },
       };
     }

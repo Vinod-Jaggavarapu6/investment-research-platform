@@ -1,41 +1,74 @@
 import asyncio
-import json
-import logging
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator, Any
 
+import structlog
+
 from app.graph import build_graph
+from app.metrics import agent_duration_seconds, research_requests_total
 from app.state import AgentState
 from app.cache.cache_keys import full_report_key, CACHE_TTL
+from app.sse_types import (
+    CitationOut,
+    NodeStartEvent,
+    NodeCompleteEvent,
+    NodeErrorEvent,
+    TokenEvent,
+    DoneEvent,
+    ConversationReadyEvent,
+    ErrorEvent,
+)
 
-
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # Nodes forwarded to the frontend as SSE node_start / node_complete events.
-# data_preflight is intentionally excluded — it's an internal gate, not a
-# user-visible step. We capture its output separately via PREFLIGHT_NODE.
-TRACKED_NODES = {"router", "cache_check", "market_agent", "filings_agent", "news_agent", "synthesizer", "compare_agent"}
+# Internal nodes (data_preflight, cache_check) are intentionally excluded —
+# they are implementation details, not user-visible pipeline steps.
+TRACKED_NODES = {"router", "market_agent", "filings_agent", "news_agent", "synthesizer", "compare_agent"}
 PREFLIGHT_NODE = "data_preflight"
 
 
-def _event(type_: str, **kwargs) -> dict:
-    return {"data": json.dumps({"type": type_, **kwargs})}
+def _sse(model) -> dict:
+    return {"data": model.model_dump_json()}
 
-def node_start_event(node: str)              -> dict: return _event("node_start", node=node)
-def node_complete_event(node: str, data: Any)-> dict: return _event("node_complete", node=node, data=data)
-def token_event(text: str)                   -> dict: return _event("token", text=text)
-def error_event(message: str)                -> dict: return _event("error", message=message)
+def node_start_event(node: str) -> dict:
+    return _sse(NodeStartEvent(node=node))
+
+def node_complete_event(node: str, data: Any) -> dict:
+    return _sse(NodeCompleteEvent(node=node, data=data))
+
+def node_error_event(node: str, reason: str) -> dict:
+    return _sse(NodeErrorEvent(node=node, reason=reason))
+
+def token_event(text: str) -> dict:
+    return _sse(TokenEvent(text=text))
+
+def error_event(message: str) -> dict:
+    return _sse(ErrorEvent(message=message))
+
 def done_event(
     report: Any,
     ingesting_ticker: str | None = None,
     citations: list | None = None,
     conversation_id: str | None = None,
 ) -> dict:
-    return _event("done", report=report, ingesting_ticker=ingesting_ticker, citations=citations or [], conversation_id=conversation_id)
+    validated_citations = []
+    for c in (citations or []):
+        try:
+            validated_citations.append(CitationOut.model_validate(c))
+        except Exception:
+            logger.warning("[stream] citation failed validation, skipping: %r", c)
+    return _sse(DoneEvent(
+        report=report,
+        ingesting_ticker=ingesting_ticker,
+        citations=validated_citations,
+        conversation_id=conversation_id,
+    ))
 
 def conversation_ready_event(conversation_id: str) -> dict:
-    return _event("conversation_ready", conversation_id=conversation_id)
+    return _sse(ConversationReadyEvent(conversation_id=conversation_id))
 
 
 def _extract_node_output(node: str, output: Any) -> dict:
@@ -151,8 +184,12 @@ async def research_stream(
 
     derived_ticker: str = ticker.upper() if ticker else ""
     conversation_id = conversation_id or str(uuid.uuid4())
-    logger.info("[stream] start  request_ticker=%r derived_ticker=%r question=%r conversation_id=%r",
-                ticker, derived_ticker, question[:80], conversation_id)
+    logger.info(
+        "stream.started",
+        request_ticker=ticker,
+        derived_ticker=derived_ticker,
+        conversation_id=conversation_id,
+    )
 
     token_queue: asyncio.Queue[str | None] = asyncio.Queue()
     assembled_answer: list[str] = []
@@ -177,9 +214,9 @@ async def research_stream(
             prior = await _load_recent_messages(db, conversation_id)
             if prior:
                 initial_state["messages"] = prior
-                logger.info("[stream] loaded %d prior messages for conversation_id=%r", len(prior), conversation_id)
+                logger.info("stream.prior_messages_loaded", count=len(prior), conversation_id=conversation_id)
         except Exception:
-            logger.exception("[stream] failed to load prior messages conversation_id=%r", conversation_id)
+            logger.exception("stream.prior_messages_failed", conversation_id=conversation_id)
     # conversation_id doubles as the LangGraph thread_id so follow-up
     # questions automatically resume graph state from the prior turn.
     thread_id = conversation_id
@@ -187,6 +224,7 @@ async def research_stream(
 
     nodes_started:            set[str] = set()
     nodes_completed:          set[str] = set()
+    node_start_times:         dict[str, float] = {}
     final_answer:             str | None = None
     captured_route:           str = "comprehensive"
     captured_citations:       list = []
@@ -214,32 +252,47 @@ async def research_stream(
                     output = raw_output if isinstance(raw_output, dict) else {}
                     if output.get("ingest_pending"):
                         captured_ingest_pending = True
-                        logger.info(
-                            "[stream] data_preflight: ingest_pending=True ticker=%r — "
-                            "graph will exit early, no agents will run",
-                            derived_ticker,
-                        )
+                        logger.info("stream.preflight_ingest_pending", ticker=derived_ticker)
                     elif output:
-                        logger.info(
-                            "[stream] data_preflight: ticker=%r has data, proceeding to agents",
-                            derived_ticker,
-                        )
+                        logger.info("stream.preflight_passthrough", ticker=derived_ticker)
 
-                # ── Frontend-visible node events ──────────────────────────────
                 if kind == "on_chain_start" and node in TRACKED_NODES:
                     if node not in nodes_started:
                         nodes_started.add(node)
-                        logger.info("[stream] node_start  node=%r ticker=%r", node, derived_ticker)
+                        node_start_times[node] = time.perf_counter()
+                        logger.info("stream.node_start", node=node, ticker=derived_ticker)
                         await sse_queue.put(node_start_event(node))
 
                 elif kind == "on_chain_end" and node in TRACKED_NODES:
+                    raw_output = event.get("data", {}).get("output")
+
+                    # Citation capture runs on every on_chain_end event (not just
+                    # the first) because LangGraph fires two per node: the actual
+                    # dict output and a list-typed routing-edge result. The
+                    # nodes_completed guard below would skip whichever arrives
+                    # second, so we capture citations here unconditionally and
+                    # only update when we get a non-empty dict-typed result.
+                    if node in ("filings_agent", "compare_agent") and isinstance(raw_output, dict):
+                        cits = raw_output.get("citations")
+                        if cits:
+                            captured_citations = cits
+
                     if node not in nodes_completed:
                         nodes_completed.add(node)
-                        output       = event.get("data", {}).get("output") or {}
-                        node_summary = _extract_node_output(node, output)
-                        logger.info("[stream] node_complete node=%r ticker=%r summary=%r",
-                                    node, derived_ticker, node_summary)
-                        await sse_queue.put(node_complete_event(node, node_summary))
+                        if node in node_start_times:
+                            agent_duration_seconds.labels(
+                                node_name=node,
+                                route=captured_route,
+                            ).observe(time.perf_counter() - node_start_times[node])
+                        output       = raw_output if isinstance(raw_output, dict) else {}
+                        node_failure = (output.get("agent_errors") or {}).get(node)
+                        if node_failure:
+                            logger.warning("stream.node_error", node=node, reason=node_failure, ticker=derived_ticker)
+                            await sse_queue.put(node_error_event(node, node_failure))
+                        else:
+                            node_summary = _extract_node_output(node, output)
+                            logger.info("stream.node_complete", node=node, ticker=derived_ticker)
+                            await sse_queue.put(node_complete_event(node, node_summary))
 
                         if node in ("synthesizer", "compare_agent") and isinstance(output, dict):
                             final_answer = output.get("final_answer")
@@ -249,17 +302,13 @@ async def research_stream(
                             router_ticker  = (output.get("ticker") or "").upper()
                             if router_ticker:
                                 derived_ticker = router_ticker
-                            logger.info("[stream] router  route=%r ticker=%r",
-                                        captured_route, derived_ticker)
-
-                        if node in ("filings_agent", "compare_agent") and isinstance(output, dict):
-                            captured_citations = output.get("citations") or []
+                            logger.info("stream.router_done", route=captured_route, ticker=derived_ticker)
 
         except asyncio.CancelledError:
             # Raised by asyncio.shield inside LangChain's on_chain_end callback when
             # the outer task is cancelled (e.g. client disconnects).  Absorb it here so
             # the task exits cleanly rather than surfacing as an unhandled exception.
-            logger.info("[stream] run_graph cancelled ticker=%r", derived_ticker)
+            logger.info("stream.graph_cancelled", ticker=derived_ticker)
 
         finally:
             await sse_queue.put(None)
@@ -284,7 +333,7 @@ async def research_stream(
             try:
                 await _create_conversation(db, conversation_id, session_id, question, derived_ticker)
             except Exception:
-                logger.exception("[stream] failed to eagerly create conversation conversation_id=%r", conversation_id)
+                logger.exception("stream.create_conversation_failed", conversation_id=conversation_id)
         yield conversation_ready_event(conversation_id)
 
         graph_task = asyncio.create_task(run_graph())
@@ -316,11 +365,15 @@ async def research_stream(
         synthesizer_ran = "synthesizer" in nodes_completed or "compare_agent" in nodes_completed
 
         logger.info(
-            "[stream] complete  ticker=%r route=%r ingest_pending=%s "
-            "synthesizer_ran=%s answer_len=%d citations=%d",
-            derived_ticker, captured_route, captured_ingest_pending,
-            synthesizer_ran, len(final_answer or ""), len(captured_citations),
+            "stream.complete",
+            ticker=derived_ticker,
+            route=captured_route,
+            ingest_pending=captured_ingest_pending,
+            synthesizer_ran=synthesizer_ran,
+            answer_len=len(final_answer or ""),
+            citations=len(captured_citations),
         )
+        research_requests_total.labels(route=captured_route, status="completed").inc()
 
         if cache and final_answer and cache_key and synthesizer_ran and not captured_ingest_pending:
             ok = await cache.set(
@@ -332,9 +385,9 @@ async def research_stream(
                 },
                 ttl=timedelta(seconds=CACHE_TTL["full_report"]),
             )
-            logger.info("[stream] cache SET  key=%r ok=%s", cache_key, ok)
+            logger.info("stream.cache_set", key=cache_key, ok=ok)
         elif captured_ingest_pending:
-            logger.info("[stream] cache SKIP — ingest pending for %r", derived_ticker)
+            logger.info("stream.cache_skip_ingest_pending", ticker=derived_ticker)
 
         ingesting_ticker = derived_ticker if captured_ingest_pending else None
 
@@ -348,16 +401,16 @@ async def research_stream(
                     answer=final_answer,
                     ticker=derived_ticker,
                 )
-                logger.info("[stream] persisted exchange  conversation_id=%r", conversation_id)
+                logger.info("stream.exchange_persisted", conversation_id=conversation_id)
             except Exception:
-                logger.exception("[stream] failed to persist exchange  conversation_id=%r", conversation_id)
+                logger.exception("stream.exchange_persist_failed", conversation_id=conversation_id)
 
-        logger.info("[stream] done event  ingesting_ticker=%r citations=%d",
-                    ingesting_ticker, len(captured_citations))
+        logger.info("stream.done", ingesting_ticker=ingesting_ticker, citations=len(captured_citations))
         yield done_event(final_answer, ingesting_ticker=ingesting_ticker, citations=captured_citations, conversation_id=conversation_id)
 
     except asyncio.CancelledError:
-        logger.info("[stream] cancelled — client disconnected ticker=%r", ticker)
+        logger.info("stream.cancelled", ticker=ticker)
+        research_requests_total.labels(route=captured_route, status="cancelled").inc()
         # Cancel the token forwarder only.  Do NOT cancel graph_task — abrupt
         # cancellation propagates into LangGraph's internal asyncio.create_task()
         # calls, leaving sub-tasks whose exceptions are never retrieved, which
@@ -368,5 +421,6 @@ async def research_stream(
         await asyncio.gather(token_task, return_exceptions=True)
 
     except Exception as exc:
-        logger.exception("[stream] error ticker=%r", ticker)
+        logger.exception("stream.error", ticker=ticker)
+        research_requests_total.labels(route=captured_route, status="error").inc()
         yield error_event(str(exc))

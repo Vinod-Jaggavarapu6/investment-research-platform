@@ -12,21 +12,21 @@ Routes:
   filings_recent → 10-Q/8-K only, higher K, recent-focused prompt
 """
 
-import logging
 import os
 from dataclasses import dataclass
 from langsmith import traceable
 
-from openai import AsyncOpenAI
+import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.tools.retrieval import retrieve_chunks
-from langsmith.wrappers import wrap_openai
-
+from ..clients import get_openai_async
+from ..metrics import llm_tokens_total
 from ..state import AgentState
+from .base import node_error
 
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Config
@@ -127,9 +127,9 @@ async def _make_search_query(question: str, ticker: str | None) -> str:
     if not ticker:
         return question
 
-    client = wrap_openai(AsyncOpenAI())
-    response = await client.chat.completions.create(
-        model="gpt-4o-mini",
+    rewriter_model = "gpt-4o-mini"
+    response = await get_openai_async().chat.completions.create(
+        model=rewriter_model,
         max_completion_tokens=30,
         messages=[{
             "role": "user",
@@ -143,6 +143,9 @@ async def _make_search_query(question: str, ticker: str | None) -> str:
             ),
         }],
     )
+    if response.usage:
+        llm_tokens_total.labels(model=rewriter_model, token_type="input").inc(response.usage.prompt_tokens)
+        llm_tokens_total.labels(model=rewriter_model, token_type="output").inc(response.usage.completion_tokens)
     return response.choices[0].message.content.strip()
 
 
@@ -174,8 +177,12 @@ async def answer_filing_question(
     # ------------------------------------------------------------------
     search_query = await _make_search_query(question, ticker)
     logger.info(
-        "Retrieving chunks: original=%r search_query=%r ticker=%r filing_types=%r k=%d",
-        question, search_query, ticker, filing_types, k,
+        "filings_agent.retrieving",
+        ticker=ticker,
+        search_query=search_query,
+        filing_types=filing_types,
+        k=k,
+        recent_mode=recent_mode,
     )
     chunks = await retrieve_chunks(
         query=search_query,
@@ -186,6 +193,7 @@ async def answer_filing_question(
     )
 
     if not chunks:
+        logger.info("filings_agent.no_chunks", ticker=ticker, recent_mode=recent_mode)
         msg = (
             "No recent quarterly or event filings (10-Q/8-K) were found for this company. "
             "Try asking about annual filings instead."
@@ -194,7 +202,7 @@ async def answer_filing_question(
         )
         return FilingsAnswer(question=question, answer=msg, ticker=ticker, sources=[], model=MODEL)
 
-    logger.info("Retrieved %d chunks. Top score: %.3f", len(chunks), chunks[0]["score"])
+    logger.info("filings_agent.chunks_retrieved", ticker=ticker, chunk_count=len(chunks), top_score=round(chunks[0]["score"], 3))
 
     # ------------------------------------------------------------------
     # Step 2: Build prompt
@@ -225,10 +233,8 @@ async def answer_filing_question(
     # ------------------------------------------------------------------
     # Step 3: Generate answer with OpenAI
     # ------------------------------------------------------------------
-    client = wrap_openai(AsyncOpenAI())
-
-    logger.info("Generating answer with %s (recent_mode=%s)...", MODEL, recent_mode)
-    response = await client.chat.completions.create(
+    logger.info("filings_agent.generating", ticker=ticker, model=MODEL, recent_mode=recent_mode)
+    response = await get_openai_async().chat.completions.create(
         model=MODEL,
         max_completion_tokens=MAX_TOKENS,
         messages=[
@@ -238,9 +244,13 @@ async def answer_filing_question(
     )
 
     answer = response.choices[0].message.content
+    llm_tokens_total.labels(model=MODEL, token_type="input").inc(response.usage.prompt_tokens)
+    llm_tokens_total.labels(model=MODEL, token_type="output").inc(response.usage.completion_tokens)
     logger.info(
-        "Answer generated. input_tokens=%d output_tokens=%d",
-        response.usage.prompt_tokens, response.usage.completion_tokens,
+        "filings_agent.completed",
+        ticker=ticker,
+        tokens_in=response.usage.prompt_tokens,
+        tokens_out=response.usage.completion_tokens,
     )
 
     return FilingsAnswer(question=question, answer=answer, ticker=ticker, sources=chunks, model=MODEL)
@@ -249,21 +259,25 @@ async def answer_filing_question(
 def make_filings_node(db: AsyncSession):
     """Factory that returns a filings_node with db captured in closure."""
     async def filings_node(state: AgentState) -> dict:
-        route       = state.get("route", "")
-        is_recent   = route == "filings_recent"
-        filing_types = ["10-Q", "8-K"] if is_recent else None
-        k            = RETRIEVAL_K_RECENT if is_recent else RETRIEVAL_K
+        try:
+            route        = state.get("route", "")
+            is_recent    = route == "filings_recent"
+            filing_types = ["10-Q", "8-K"] if is_recent else None
+            k            = RETRIEVAL_K_RECENT if is_recent else RETRIEVAL_K
 
-        result = await answer_filing_question(
-            question=state["question"],
-            db=db,
-            ticker=state.get("ticker"),
-            k=k,
-            filing_types=filing_types,
-            recent_mode=is_recent,
-        )
-        return {
-            "filings_output": result.answer,
-            "citations":      result.sources,
-        }
+            result = await answer_filing_question(
+                question=state["question"],
+                db=db,
+                ticker=state.get("ticker"),
+                k=k,
+                filing_types=filing_types,
+                recent_mode=is_recent,
+            )
+            return {
+                "filings_output": result.answer,
+                "citations":      result.sources,
+            }
+        except Exception as exc:
+            return {**node_error("filings_output", "filings_agent", exc), "citations": []}
+
     return filings_node

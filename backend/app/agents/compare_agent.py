@@ -9,19 +9,21 @@ Flow:
 """
 
 import asyncio
-import logging
 import os
+from typing import Callable, Awaitable
 
-import anthropic
-from langsmith.wrappers import wrap_anthropic
+import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.tools.retrieval import retrieve_chunks
 from app.tools.market_data import fetch_financial_data
 from .financial_agent import _format_for_prompt
+from ..clients import get_anthropic_async
+from ..metrics import llm_tokens_total
 from ..state import AgentState
+from .base import node_error
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 MODEL       = os.getenv("COMPARE_AGENT_MODEL", "claude-sonnet-4-6")
 MAX_TOKENS  = 2048
@@ -84,7 +86,7 @@ async def _fetch_market_for_ticker(ticker: str) -> tuple[str, str | None]:
         raw = await loop.run_in_executor(None, fetch_financial_data, ticker)
         return ticker, _format_for_prompt(raw)
     except Exception as e:
-        logger.warning("[compare] market data fetch failed for %s: %s", ticker, e)
+        logger.warning("compare_agent.market_fetch_failed", ticker=ticker, error=str(e))
         return ticker, None
 
 
@@ -126,10 +128,11 @@ def _build_context(
 
 
 async def compare_companies(
-    question: str,
-    tickers:  list[str],
-    db:       AsyncSession,
-    k:        int = RETRIEVAL_K,
+    question:  str,
+    tickers:   list[str],
+    db:        AsyncSession,
+    k:         int = RETRIEVAL_K,
+    on_token:  Callable[[str], Awaitable[None]] | None = None,
 ) -> tuple[str, list[dict]]:
     """
     Run market data fetch + filing retrieval for each ticker in parallel, then call Claude.
@@ -150,7 +153,7 @@ async def compare_companies(
 
     for item in filing_results:
         if isinstance(item, Exception):
-            logger.error("[compare] retrieval error: %s", item)
+            logger.error("compare_agent.retrieval_error", error=str(item))
             continue
         ticker, chunks = item
         per_ticker[ticker] = chunks
@@ -158,7 +161,7 @@ async def compare_companies(
 
     for item in market_results:
         if isinstance(item, Exception):
-            logger.error("[compare] market fetch error: %s", item)
+            logger.error("compare_agent.market_error", error=str(item))
             continue
         ticker, formatted = item
         market_data[ticker] = formatted
@@ -172,8 +175,8 @@ async def compare_companies(
 
     tickers_str = " vs ".join(tickers)
 
-    client = wrap_anthropic(anthropic.AsyncAnthropic())
-    response = await client.messages.create(
+    chunks: list[str] = []
+    async with get_anthropic_async().messages.stream(
         model=MODEL,
         max_tokens=MAX_TOKENS,
         system=COMPARE_SYSTEM,
@@ -204,15 +207,25 @@ async def compare_companies(
                 ],
             }
         ],
-    )
+    ) as stream:
+        async for text in stream.text_stream:
+            chunks.append(text)
+            if on_token is not None:
+                await on_token(text)
+        usage = stream.current_message_snapshot.usage
+        llm_tokens_total.labels(model=MODEL, token_type="input").inc(usage.input_tokens)
+        llm_tokens_total.labels(model=MODEL, token_type="output").inc(usage.output_tokens)
+        cache_read = getattr(usage, "cache_read_input_tokens", None) or 0
+        if cache_read:
+            llm_tokens_total.labels(model=MODEL, token_type="cache_read").inc(cache_read)
 
-    answer = response.content[0].text
-    return answer, all_citations
+    return "".join(chunks), all_citations
 
 
-def make_compare_node(db: AsyncSession):
-    """Factory returning a LangGraph-compatible compare node with db in closure."""
-
+def make_compare_node(
+    db:       AsyncSession,
+    on_token: Callable[[str], Awaitable[None]] | None = None,
+):
     async def compare_node(state: AgentState) -> dict:
         tickers = state.get("tickers") or []
 
@@ -230,20 +243,19 @@ def make_compare_node(db: AsyncSession):
                 "citations": [],
             }
 
-        logger.info(
-            "[compare] tickers=%r question=%r", tickers, state["question"][:60]
-        )
+        logger.info("compare_agent.started", tickers=tickers)
 
-        answer, citations = await compare_companies(
-            question=state["question"],
-            tickers=tickers,
-            db=db,
-        )
+        try:
+            answer, citations = await compare_companies(
+                question=state["question"],
+                tickers=tickers,
+                db=db,
+                on_token=on_token,
+            )
+        except Exception as exc:
+            return {**node_error("final_answer", "compare_agent", exc), "citations": []}
 
-        logger.info(
-            "[compare] done tickers=%r answer_len=%d citations=%d",
-            tickers, len(answer), len(citations),
-        )
+        logger.info("compare_agent.completed", tickers=tickers, output_chars=len(answer), citations=len(citations))
 
         return {
             "final_answer": answer,

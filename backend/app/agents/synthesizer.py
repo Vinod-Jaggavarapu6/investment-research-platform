@@ -1,9 +1,14 @@
 import os
-
-import anthropic
-from langsmith.wrappers import wrap_anthropic
 from typing import Callable, Awaitable
+
+import structlog
+
+from ..clients import get_anthropic_async
+from ..metrics import llm_tokens_total
 from ..state import AgentState
+from .base import node_error
+
+logger = structlog.get_logger(__name__)
 
 MODEL      = os.getenv("SYNTHESIZER_MODEL", "claude-sonnet-4-6")
 MAX_TOKENS = int(os.getenv("SYNTHESIZER_MAX_TOKENS", "2048"))
@@ -61,57 +66,101 @@ def make_synthesizer_node(
               None for the non-streaming POST /research path.
     """
     async def synthesizer_node(state: AgentState) -> dict:
-        parts = []
-        if state.get("market_output"):
-            parts.append(f"## Live Market Data\n{state['market_output']}")
-        if state.get("filings_output"):
-            parts.append(f"## SEC Filing Research\n{state['filings_output']}")
-        if state.get("news_output"):
-            parts.append(f"## Recent News Sentiment\n{state['news_output']}")
+        try:
+            parts = []
+            if state.get("market_output"):
+                parts.append(f"## Live Market Data\n{state['market_output']}")
+            if state.get("filings_output"):
+                parts.append(f"## SEC Filing Research\n{state['filings_output']}")
+            if state.get("news_output"):
+                parts.append(f"## Recent News Sentiment\n{state['news_output']}")
 
-        combined = "\n\n".join(parts)
+            # Append a note for any agents that failed so the synthesizer can
+            # tell the user which sources are absent and why, rather than just
+            # producing a silently incomplete answer.
+            agent_errors = state.get("agent_errors") or {}
+            if agent_errors:
+                _agent_labels = {
+                    "market_agent":   "live market data",
+                    "filings_agent":  "SEC filing research",
+                    "news_agent":     "news sentiment",
+                    "synthesizer":    "synthesis",
+                }
+                failed = "; ".join(
+                    f"{_agent_labels.get(k, k)} ({v})" for k, v in agent_errors.items()
+                )
+                parts.append(
+                    f"## Data Availability Note\n"
+                    f"The following sources failed to load and are not included above: {failed}. "
+                    f"Answer only from the sources present. "
+                    f"Briefly acknowledge the missing data in your response."
+                )
 
-        # Build messages: prepend prior Q&A turns so the model can resolve
-        # follow-up references ("that figure", "elaborate on point 3", etc.)
-        prior = state.get("messages") or []
-        messages = [{"role": m["role"], "content": m["content"]} for m in prior]
-        messages.append({
-            "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    # Cache the research data — the expensive prefix that repeats across calls
-                    "text": f"Research collected:\n{combined}",
-                    "cache_control": {"type": "ephemeral"},
-                },
-                {
-                    "type": "text",
-                    "text": f"\nQuestion: {state['question']}\n\nSynthesize a final answer.",
-                },
-            ],
-        })
+            sources = [
+                k for k, present in {
+                    "market": bool(state.get("market_output")),
+                    "filings": bool(state.get("filings_output")),
+                    "news": bool(state.get("news_output")),
+                }.items() if present
+            ]
+            logger.info(
+                "synthesizer.started",
+                ticker=state.get("ticker"),
+                route=state.get("route"),
+                sources=sources,
+                failed_agents=list(agent_errors.keys()),
+                model=MODEL,
+            )
 
-        client = wrap_anthropic(anthropic.AsyncAnthropic())
-        chunks: list[str] = []
-        async with client.messages.stream(
-            model=MODEL,
-            max_tokens=MAX_TOKENS,
-            system=SYNTH_SYSTEM,
-            messages=messages,
-        ) as stream:
-            async for text in stream.text_stream:
-                chunks.append(text)
-                if on_token is not None:
-                    await on_token(text)
+            combined = "\n\n".join(parts)
 
-        final = await stream.get_final_message()
-        u = final.usage
-        print(
-            f"[SYNTH CACHE] "
-            f"created_1h={u.cache_creation.ephemeral_1h_input_tokens} "
-            f"read={u.cache_read_input_tokens} uncached={u.input_tokens}",
-            flush=True,
-        )
-        return {"final_answer": "".join(chunks)}
+            # Build messages: prepend prior Q&A turns so the model can resolve
+            # follow-up references ("that figure", "elaborate on point 3", etc.)
+            prior = state.get("messages") or []
+            messages = [{"role": m["role"], "content": m["content"]} for m in prior]
+            messages.append({
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        # Cache the research data — the expensive prefix that repeats across calls
+                        "text": f"Research collected:\n{combined}",
+                        "cache_control": {"type": "ephemeral"},
+                    },
+                    {
+                        "type": "text",
+                        "text": f"\nQuestion: {state['question']}\n\nSynthesize a final answer.",
+                    },
+                ],
+            })
+
+            chunks: list[str] = []
+            async with get_anthropic_async().messages.stream(
+                model=MODEL,
+                max_tokens=MAX_TOKENS,
+                system=SYNTH_SYSTEM,
+                messages=messages
+            ) as stream:
+                async for text in stream.text_stream:
+                    chunks.append(text)
+                    if on_token is not None:
+                        await on_token(text)
+                usage = stream.current_message_snapshot.usage
+                llm_tokens_total.labels(model=MODEL, token_type="input").inc(usage.input_tokens)
+                llm_tokens_total.labels(model=MODEL, token_type="output").inc(usage.output_tokens)
+                cache_read = getattr(usage, "cache_read_input_tokens", None) or 0
+                if cache_read:
+                    llm_tokens_total.labels(model=MODEL, token_type="cache_read").inc(cache_read)
+
+            logger.info(
+                "synthesizer.completed",
+                ticker=state.get("ticker"),
+                output_chars=sum(len(c) for c in chunks),
+            )
+            return {"final_answer": "".join(chunks)}
+
+        except Exception as exc:
+            logger.exception("synthesizer.failed", ticker=state.get("ticker"), exc=str(exc))
+            return node_error("final_answer", "synthesizer", exc)
 
     return synthesizer_node

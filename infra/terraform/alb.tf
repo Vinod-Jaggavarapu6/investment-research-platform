@@ -78,6 +78,39 @@ resource "aws_lb_listener" "http" {
   }
 }
 
+# ── Grafana target group — observability UI ───────────────────────────────────
+resource "aws_lb_target_group" "grafana" {
+  name        = "${var.project}-grafana-tg"
+  port        = 3000
+  protocol    = "HTTP"
+  vpc_id      = module.vpc.vpc_id
+  target_type = "ip"
+
+  health_check {
+    path                = "/grafana/api/health"
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+    interval            = 30
+    timeout             = 10
+  }
+}
+
+resource "aws_lb_listener_rule" "grafana" {
+  listener_arn = aws_lb_listener.http.arn
+  priority     = 200
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.grafana.arn
+  }
+
+  condition {
+    path_pattern {
+      values = ["/grafana", "/grafana/*"]
+    }
+  }
+}
+
 # Routing rules — backend API paths (AWS ALB caps path_pattern at 5 values per rule)
 resource "aws_lb_listener_rule" "backend" {
   listener_arn = aws_lb_listener.http.arn
@@ -107,6 +140,23 @@ resource "aws_lb_listener_rule" "backend_extra" {
   condition {
     path_pattern {
       values = ["/retrieve/*", "/health"]
+    }
+  }
+}
+
+# Routes missing from original config — /rag, /conversations, /ingest, /cache, /analysis
+resource "aws_lb_listener_rule" "backend_remaining" {
+  listener_arn = aws_lb_listener.http.arn
+  priority     = 102
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.backend.arn
+  }
+
+  condition {
+    path_pattern {
+      values = ["/rag/*", "/conversations*", "/ingest/*", "/cache/*", "/analysis/*"]
     }
   }
 }

@@ -12,47 +12,38 @@ Ticker filtering is a native WHERE clause — no overfetch or post-filtering nee
 import logging
 from typing import Optional
 
-from openai import OpenAI
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import Chunk
-from app.rag.embedder import get_client, EMBEDDING_MODEL
+from ..database import Chunk
+from ..rag.embedder import EMBEDDING_MODEL, EMBEDDING_DIM
+from ..clients import get_openai_sync
 
 logger = logging.getLogger(__name__)
 
-_openai_client: OpenAI | None = None
-
-
-def _get_openai_client() -> OpenAI:
-    global _openai_client
-    if _openai_client is None:
-        _openai_client = get_client()
-    return _openai_client
-
 
 async def retrieve_chunks(
-    query:        str,
-    db:           AsyncSession,
-    ticker:       Optional[str] = None,
-    k:            int = 5,
-    filing_types: list[str] | None = None,
+    query:           str,
+    db:              AsyncSession,
+    ticker:          Optional[str] = None,
+    k:               int = 5,
+    filing_types:    list[str] | None = None,
+    score_threshold: float = 0.65,
 ) -> list[dict]:
     """
-    Embed query → pgvector cosine search → return top-k chunks.
+    Embed query → pgvector cosine search → return top-k chunks above threshold.
 
     Args:
-        query:  The user's question in plain English
-        db:     SQLAlchemy async session
-        ticker: Optional — restrict results to one company e.g. "AAPL"
-        k:      How many chunks to return
+        query:           The user's question in plain English
+        db:              SQLAlchemy async session
+        ticker:          Optional — restrict results to one company e.g. "AAPL"
+        k:               How many chunks to return (before threshold filtering)
+        score_threshold: Discard chunks with cosine similarity below this value
 
     Returns:
         List of dicts with text, ticker, year, section, score (0–1).
     """
-    from app.rag.embedder import EMBEDDING_DIM
-    client = _get_openai_client()
-    response = client.embeddings.create(model=EMBEDDING_MODEL, input=query, dimensions=EMBEDDING_DIM)
+    response = get_openai_sync().embeddings.create(model=EMBEDDING_MODEL, input=query, dimensions=EMBEDDING_DIM)
     query_vector = response.data[0].embedding
 
     distance_expr = Chunk.embedding.cosine_distance(query_vector)
@@ -85,11 +76,20 @@ async def retrieve_chunks(
         for row in rows
     ]
 
+    filtered = [c for c in chunks if c["score"] >= score_threshold]
+    n_dropped = len(chunks) - len(filtered)
+    if n_dropped:
+        logger.info(
+            "[retrieval] dropped %d low-quality chunk(s) below threshold=%.2f (kept %d/%d)",
+            n_dropped, score_threshold, len(filtered), len(chunks),
+        )
+
     logger.info(
-        "[retrieval] query=%r ticker=%r k=%d top_score=%.3f",
-        query[:60], ticker, k, chunks[0]["score"] if chunks else 0,
+        "[retrieval] query=%r ticker=%r k=%d threshold=%.2f top_score=%.3f returned=%d",
+        query[:60], ticker, k, score_threshold,
+        filtered[0]["score"] if filtered else 0, len(filtered),
     )
-    return chunks
+    return filtered
 
 
 async def ticker_has_data(ticker: str, db: AsyncSession) -> bool:

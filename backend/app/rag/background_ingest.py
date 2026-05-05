@@ -8,19 +8,23 @@ blocks the async event loop.  The DB write is async.
 
 import asyncio
 import logging
+from datetime import date, timedelta
 from pathlib import Path
 
 import numpy as np
 
-from app.database import AsyncSessionLocal, Chunk
-from app.rag.chunker import chunk_filing
-from app.rag.embedder import embed_chunks, get_client
-from app.rag.ingest import ingest_filing, ingest_recent_filings
+from ..database import AsyncSessionLocal, Chunk
+from .chunker import chunk_filing
+from .embedder import embed_chunks, get_client
+from .ingest import ingest_filing, ingest_recent_filings
 
 logger = logging.getLogger(__name__)
 
 DOWNLOAD_DIR = Path("data/raw")
-RECENT_AFTER = "2024-01-01"
+
+
+def _recent_after() -> str:
+    return (date.today() - timedelta(days=730)).strftime("%Y-%m-%d")
 
 _ingesting: set[str] = set()
 
@@ -71,14 +75,14 @@ def _sync_ingest(ticker: str) -> tuple:
         logger.error("[bg-ingest] %s 10-K failed: %s", ticker, e)
 
     try:
-        sections = ingest_recent_filings(ticker, DOWNLOAD_DIR, "10-Q", limit=4, after=RECENT_AFTER)
+        sections = ingest_recent_filings(ticker, DOWNLOAD_DIR, "10-Q", limit=4, after=_recent_after())
         all_sections.extend(sections or [])
         logger.info("[bg-ingest] %s 10-Q: %d sections", ticker, len(sections or []))
     except Exception as e:
         logger.error("[bg-ingest] %s 10-Q failed: %s", ticker, e)
 
     try:
-        sections = ingest_recent_filings(ticker, DOWNLOAD_DIR, "8-K", limit=6, after=RECENT_AFTER)
+        sections = ingest_recent_filings(ticker, DOWNLOAD_DIR, "8-K", limit=6, after=_recent_after())
         all_sections.extend(sections or [])
         logger.info("[bg-ingest] %s 8-K: %d sections", ticker, len(sections or []))
     except Exception as e:
