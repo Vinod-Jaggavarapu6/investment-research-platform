@@ -23,9 +23,7 @@ from app.sse_types import (
 
 logger = structlog.get_logger(__name__)
 
-# Nodes forwarded to the frontend as SSE node_start / node_complete events.
-# Internal nodes (data_preflight, cache_check) are intentionally excluded —
-# they are implementation details, not user-visible pipeline steps.
+# Nodes exposed via SSE — excludes internal nodes (data_preflight, cache_check)
 TRACKED_NODES = {"router", "market_agent", "filings_agent", "news_agent", "synthesizer", "compare_agent"}
 PREFLIGHT_NODE = "data_preflight"
 
@@ -207,8 +205,7 @@ async def research_stream(
     if derived_ticker:
         initial_state["ticker"] = derived_ticker
 
-    # Load prior messages so the synthesizer can handle follow-up questions
-    # that reference the previous answer ("elaborate on X", "that figure you mentioned").
+    # Load prior messages for follow-up context ("elaborate on X", "that figure you mentioned")
     if db and conversation_id:
         try:
             prior = await _load_recent_messages(db, conversation_id)
@@ -217,8 +214,7 @@ async def research_stream(
                 logger.info("stream.prior_messages_loaded", count=len(prior), conversation_id=conversation_id)
         except Exception:
             logger.exception("stream.prior_messages_failed", conversation_id=conversation_id)
-    # conversation_id doubles as the LangGraph thread_id so follow-up
-    # questions automatically resume graph state from the prior turn.
+    # conversation_id = thread_id so LangGraph resumes graph state across turns
     thread_id = conversation_id
     config    = {"configurable": {"thread_id": thread_id}}
 
@@ -241,12 +237,9 @@ async def research_stream(
                 kind = event["event"]
                 node = event.get("metadata", {}).get("langgraph_node", "")
 
-                # ── Capture data_preflight output (not sent to frontend) ──────
-                # LangGraph fires multiple on_chain_end events with
-                # langgraph_node="data_preflight": one for the node itself (dict)
-                # and one for the conditional-edge routing result (list such as
-                # ["market_agent"]).  Guard with isinstance so the routing-result
-                # event doesn't crash when we call .get() on the list.
+                # Capture data_preflight output (not forwarded to frontend).
+                # LangGraph fires two on_chain_end per node: one dict output and one list
+                # routing result — isinstance guard avoids .get() crash on the list.
                 if kind == "on_chain_end" and node == PREFLIGHT_NODE:
                     raw_output = event.get("data", {}).get("output")
                     output = raw_output if isinstance(raw_output, dict) else {}
@@ -266,12 +259,9 @@ async def research_stream(
                 elif kind == "on_chain_end" and node in TRACKED_NODES:
                     raw_output = event.get("data", {}).get("output")
 
-                    # Citation capture runs on every on_chain_end event (not just
-                    # the first) because LangGraph fires two per node: the actual
-                    # dict output and a list-typed routing-edge result. The
-                    # nodes_completed guard below would skip whichever arrives
-                    # second, so we capture citations here unconditionally and
-                    # only update when we get a non-empty dict-typed result.
+                    # Capture citations on every on_chain_end — nodes_completed dedups node
+                    # completion but LangGraph fires two events per node, so citations could
+                    # arrive in the second event which that guard skips.
                     if node in ("filings_agent", "compare_agent") and isinstance(raw_output, dict):
                         cits = raw_output.get("citations")
                         if cits:
@@ -305,9 +295,7 @@ async def research_stream(
                             logger.info("stream.router_done", route=captured_route, ticker=derived_ticker)
 
         except asyncio.CancelledError:
-            # Raised by asyncio.shield inside LangChain's on_chain_end callback when
-            # the outer task is cancelled (e.g. client disconnects).  Absorb it here so
-            # the task exits cleanly rather than surfacing as an unhandled exception.
+            # asyncio.shield inside LangChain raises this on outer task cancel — swallow for clean exit
             logger.info("stream.graph_cancelled", ticker=derived_ticker)
 
         finally:
@@ -321,8 +309,7 @@ async def research_stream(
             await sse_queue.put(token_event(token))
 
     def _discard_task_exception(task: asyncio.Task) -> None:
-        """Retrieve and silence a completed task's exception so it isn't logged
-        as 'Task exception was never retrieved' by the asyncio machinery."""
+        """Silences 'Task exception was never retrieved' warnings from asyncio."""
         try:
             task.exception()
         except (asyncio.CancelledError, asyncio.InvalidStateError, Exception):
@@ -338,8 +325,7 @@ async def research_stream(
 
         graph_task = asyncio.create_task(run_graph())
         token_task = asyncio.create_task(forward_tokens())
-        # Always attach the discard callback so the task result is retrieved
-        # even if the stream is abandoned mid-way (GeneratorExit, etc.).
+        # Ensure result is retrieved even if stream is abandoned mid-way (GeneratorExit, etc.)
         graph_task.add_done_callback(_discard_task_exception)
 
         while True:
@@ -411,12 +397,8 @@ async def research_stream(
     except asyncio.CancelledError:
         logger.info("stream.cancelled", ticker=ticker)
         research_requests_total.labels(route=captured_route, status="cancelled").inc()
-        # Cancel the token forwarder only.  Do NOT cancel graph_task — abrupt
-        # cancellation propagates into LangGraph's internal asyncio.create_task()
-        # calls, leaving sub-tasks whose exceptions are never retrieved, which
-        # Python logs as noisy "Task exception was never retrieved" tracebacks.
-        # graph_task drains in the background; _discard_task_exception (attached
-        # above) silently retrieves its final result/exception.
+        # Cancel token_task only — cancelling graph_task triggers "never retrieved"
+        # tracebacks from LangGraph's internal tasks. Let it drain in the background.
         token_task.cancel()
         await asyncio.gather(token_task, return_exceptions=True)
 

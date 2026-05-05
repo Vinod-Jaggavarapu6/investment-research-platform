@@ -71,8 +71,7 @@ export function useResearchStream() {
             const ticker = event.ingesting_ticker;
             startPolling(ticker, {
               onReady: () => {
-                // Read the resolved conversationId from current state so the retry
-                // reuses the same conversation instead of creating a new one.
+                // Use current state's conversationId so retry reuses the same conversation
                 setState((prev) => {
                   const resolvedConvId = prev?.conversationId ?? conversationId ?? null;
                   setTimeout(() => startFnRef.current(question, resolvedConvId), 0);
@@ -199,8 +198,7 @@ function applyEvent(state: ResearchState, event: SSEEvent): ResearchState {
       const isIngestPending = Boolean(event.ingesting_ticker);
       return {
         ...state,
-        // Keep phase as "streaming" while waiting for ingest — prevents the
-        // "Research complete" flash before ingestPending is set.
+        // Stay "streaming" during ingest to avoid "Research complete" flash
         phase: isIngestPending ? "streaming" : "done",
         ingestPending: isIngestPending,
         ingestTicker: event.ingesting_ticker ?? state.ingestTicker,

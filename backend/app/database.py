@@ -1,12 +1,4 @@
-"""
-database.py — async PostgreSQL connection + Chunk table schema
-
-Responsibilities:
-  - Create async engine (one per app lifetime)
-  - Provide session factory for FastAPI dependency injection
-  - Define the Chunk ORM model
-  - Create tables on startup
-"""
+"""Async PostgreSQL setup — engine, session factory, ORM models."""
 
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -102,11 +94,7 @@ async def create_tables():
 
 
 async def reset_embedding_column(dim: int) -> None:
-    """
-    Drop and recreate the embedding column at the given dimension.
-    Call this from build_index.py when switching embedding models.
-    Safe to call even if the column doesn't exist yet.
-    """
+    """Drops and recreates the embedding column — use when switching embedding models."""
     async with engine.begin() as conn:
         await conn.execute(text("DROP INDEX IF EXISTS chunks_embedding_hnsw"))
         await conn.execute(text("ALTER TABLE chunks DROP COLUMN IF EXISTS embedding"))
@@ -119,12 +107,6 @@ async def reset_embedding_column(dim: int) -> None:
 
 
 def get_checkpointer_url() -> str:
-    """
-    Convert SQLAlchemy asyncpg URL → plain psycopg URL for LangGraph checkpointer.
-    LangGraph uses psycopg3 directly, not SQLAlchemy.
-    
-    SQLAlchemy:  postgresql+asyncpg://user:pass@host:port/db
-    psycopg3:    postgresql://user:pass@host:port/db
-    """
+    """Strips the asyncpg driver prefix so LangGraph's psycopg3 checkpointer can connect."""
     return DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
 

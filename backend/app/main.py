@@ -85,8 +85,7 @@ app.add_middleware(
 )
 app.add_middleware(RequestLoggingMiddleware)
 
-# Auto-instrument all HTTP routes and expose /metrics.
-# Excludes /metrics and /health themselves to avoid self-referential noise.
+# Expose /metrics — excludes /metrics and /health to avoid self-referential noise
 Instrumentator(
     should_group_status_codes=True,
     should_instrument_requests_inprogress=True,
@@ -94,8 +93,7 @@ Instrumentator(
     inprogress_labels=True,
 ).instrument(app).expose(app, tags=["Infrastructure"])
 
-# OTel tracing — wires FastAPI, SQLAlchemy, Redis auto-instrumentation and
-# starts exporting spans to Tempo via OTLP/gRPC.
+# OTel tracing — FastAPI, SQLAlchemy, Redis auto-instrumentation → Tempo via OTLP/gRPC
 setup_tracing(app)
 
 

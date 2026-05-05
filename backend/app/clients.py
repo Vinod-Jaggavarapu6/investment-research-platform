@@ -1,11 +1,4 @@
-"""
-Singleton LLM clients initialized once at app startup via init_clients().
-
-Three clients are provided:
-  - Sync OpenAI  — financial_agent and news_agent (run in thread executors)
-  - Async OpenAI — router_agent and filings_agent
-  - Async Anthropic — synthesizer and compare_agent
-"""
+"""Singleton LLM clients — call init_clients() at startup before any get_*() call."""
 
 from __future__ import annotations
 

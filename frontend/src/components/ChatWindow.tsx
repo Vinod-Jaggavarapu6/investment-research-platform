@@ -55,9 +55,8 @@ export function ChatWindow({
             {/* Current in-flight exchange */}
             {pendingQuestion && <UserMessage text={pendingQuestion} live />}
 
-            {/* AgentTimeline: show while streaming, on error, or while waiting for DB messages to load.
-                pendingQuestion is cleared in the same batch as setHistoryMessages, so hiding
-                on pendingQuestion===null guarantees history is already populated — no flash. */}
+            {/* AgentTimeline shown while streaming or on error. pendingQuestion clears with
+                setHistoryMessages so pendingQuestion===null means history is ready — no flash. */}
             {streamingState && (streamingState.phase === "streaming" || streamingState.phase === "error" || pendingQuestion !== null) && (
               <div style={styles.agentBlock}>
                 <AgentTimeline research={streamingState} />
