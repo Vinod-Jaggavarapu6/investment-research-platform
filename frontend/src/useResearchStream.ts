@@ -142,6 +142,18 @@ function applyEvent(state: ResearchState, event: SSEEvent): ResearchState {
       };
     }
 
+    case "node_error": {
+      const node = event.node as NodeName;
+      if (!state.nodes[node]) return state;
+      return {
+        ...state,
+        nodes: {
+          ...state.nodes,
+          [node]: { ...state.nodes[node], status: "error", data: { reason: event.reason } },
+        },
+      };
+    }
+
     case "node_complete": {
       const node = event.node as NodeName;
       if (!state.nodes[node]) return state;

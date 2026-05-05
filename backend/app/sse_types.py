@@ -57,6 +57,12 @@ class ConversationReadyEvent(BaseModel):
     conversation_id: str
 
 
+class NodeErrorEvent(BaseModel):
+    type: Literal["node_error"] = "node_error"
+    node: str
+    reason: str
+
+
 class ErrorEvent(BaseModel):
     type: Literal["error"] = "error"
     message: str
@@ -65,6 +71,7 @@ class ErrorEvent(BaseModel):
 SSEEvent = (
     NodeStartEvent
     | NodeCompleteEvent
+    | NodeErrorEvent
     | TokenEvent
     | DoneEvent
     | ConversationReadyEvent

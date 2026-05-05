@@ -46,6 +46,7 @@ export interface Citation {
 export type SSEEvent =
   | { type: "node_start"; node: NodeName }
   | { type: "node_complete"; node: NodeName; data: Record<string, unknown> }
+  | { type: "node_error"; node: NodeName; reason: string }
   | { type: "token"; text: string }
   | { type: "done"; report: string | null; ingesting_ticker?: string | null; citations?: Citation[]; conversation_id?: string }
   | { type: "conversation_ready"; conversation_id: string }

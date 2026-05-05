@@ -23,20 +23,22 @@ logger = logging.getLogger(__name__)
 
 
 async def retrieve_chunks(
-    query:        str,
-    db:           AsyncSession,
-    ticker:       Optional[str] = None,
-    k:            int = 5,
-    filing_types: list[str] | None = None,
+    query:           str,
+    db:              AsyncSession,
+    ticker:          Optional[str] = None,
+    k:               int = 5,
+    filing_types:    list[str] | None = None,
+    score_threshold: float = 0.65,
 ) -> list[dict]:
     """
-    Embed query → pgvector cosine search → return top-k chunks.
+    Embed query → pgvector cosine search → return top-k chunks above threshold.
 
     Args:
-        query:  The user's question in plain English
-        db:     SQLAlchemy async session
-        ticker: Optional — restrict results to one company e.g. "AAPL"
-        k:      How many chunks to return
+        query:           The user's question in plain English
+        db:              SQLAlchemy async session
+        ticker:          Optional — restrict results to one company e.g. "AAPL"
+        k:               How many chunks to return (before threshold filtering)
+        score_threshold: Discard chunks with cosine similarity below this value
 
     Returns:
         List of dicts with text, ticker, year, section, score (0–1).
@@ -74,11 +76,20 @@ async def retrieve_chunks(
         for row in rows
     ]
 
+    filtered = [c for c in chunks if c["score"] >= score_threshold]
+    n_dropped = len(chunks) - len(filtered)
+    if n_dropped:
+        logger.info(
+            "[retrieval] dropped %d low-quality chunk(s) below threshold=%.2f (kept %d/%d)",
+            n_dropped, score_threshold, len(filtered), len(chunks),
+        )
+
     logger.info(
-        "[retrieval] query=%r ticker=%r k=%d top_score=%.3f",
-        query[:60], ticker, k, chunks[0]["score"] if chunks else 0,
+        "[retrieval] query=%r ticker=%r k=%d threshold=%.2f top_score=%.3f returned=%d",
+        query[:60], ticker, k, score_threshold,
+        filtered[0]["score"] if filtered else 0, len(filtered),
     )
-    return chunks
+    return filtered
 
 
 async def ticker_has_data(ticker: str, db: AsyncSession) -> bool:

@@ -102,26 +102,30 @@ interface LineProps {
 function LogLine({ node, status, data, tokens, ticker }: LineProps) {
   const isRunning = status === "running";
   const isDone = status === "done";
+  const isError = status === "error";
 
   // Strip trailing ellipsis — ThinkingDots replaces it when running
   const raw = activityMessage(node, status, ticker, data);
   const message = isRunning ? raw.replace(/…$/, "") : raw;
 
+  const iconColor: string = isRunning
+    ? colors.warning
+    : isDone
+      ? colors.success
+      : isError
+        ? colors.error
+        : colors.borderMuted;
+
   return (
     <div style={styles.line}>
       <div style={styles.lineHeader}>
-        <span
-          style={{
-            ...styles.icon,
-            color: isRunning ? colors.warning : isDone ? colors.success : colors.borderMuted,
-          }}
-        >
-          {isRunning ? <PulsingDot /> : isDone ? "✓" : "○"}
+        <span style={{ ...styles.icon, color: iconColor }}>
+          {isRunning ? <PulsingDot /> : isDone ? "✓" : isError ? "✕" : "○"}
         </span>
         <span
           style={{
             ...styles.lineText,
-            color: isDone ? colors.textFaint : colors.textPrimary,
+            color: isDone ? colors.textFaint : isError ? colors.errorText : colors.textPrimary,
             animation:
               isRunning && !tokens ? "pulse 2s ease-in-out infinite" : "none",
           }}
@@ -210,6 +214,19 @@ function activityMessage(
 ): string {
   const t = ticker?.toUpperCase() ?? "your stock";
 
+  if (status === "error") {
+    const reason = data?.reason as string | undefined;
+    const suffix = reason ? ` · ${reason}` : "";
+    switch (node) {
+      case "router":       return `Router failed${suffix}`;
+      case "market_agent": return `Market data unavailable${suffix}`;
+      case "filings_agent":return `SEC filings unavailable${suffix}`;
+      case "news_agent":   return `News data unavailable${suffix}`;
+      case "synthesizer":  return `Report generation failed${suffix}`;
+      case "compare_agent":return `Comparison failed${suffix}`;
+    }
+  }
+
   switch (node) {
     case "router": {
       if (status !== "done") return "Analyzing your question…";
@@ -296,6 +313,14 @@ function CitationsBlock({ citations }: { citations: Citation[] }) {
         {unique.map((c, i) => (
           <span key={i} style={styles.citationChip}>
             {c.ticker} {c.year} · {c.filing_type} · {c.section}
+            <span style={{
+              marginLeft: "6px",
+              fontSize: "11px",
+              fontWeight: 600,
+              color: c.score >= 0.80 ? "#16a34a" : c.score >= 0.65 ? "#ca8a04" : "#dc2626",
+            }}>
+              {Math.round(c.score * 100)}%
+            </span>
           </span>
         ))}
       </div>

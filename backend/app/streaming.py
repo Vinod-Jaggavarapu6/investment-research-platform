@@ -14,6 +14,7 @@ from app.sse_types import (
     CitationOut,
     NodeStartEvent,
     NodeCompleteEvent,
+    NodeErrorEvent,
     TokenEvent,
     DoneEvent,
     ConversationReadyEvent,
@@ -37,6 +38,9 @@ def node_start_event(node: str) -> dict:
 
 def node_complete_event(node: str, data: Any) -> dict:
     return _sse(NodeCompleteEvent(node=node, data=data))
+
+def node_error_event(node: str, reason: str) -> dict:
+    return _sse(NodeErrorEvent(node=node, reason=reason))
 
 def token_event(text: str) -> dict:
     return _sse(TokenEvent(text=text))
@@ -260,6 +264,19 @@ async def research_stream(
                         await sse_queue.put(node_start_event(node))
 
                 elif kind == "on_chain_end" and node in TRACKED_NODES:
+                    raw_output = event.get("data", {}).get("output")
+
+                    # Citation capture runs on every on_chain_end event (not just
+                    # the first) because LangGraph fires two per node: the actual
+                    # dict output and a list-typed routing-edge result. The
+                    # nodes_completed guard below would skip whichever arrives
+                    # second, so we capture citations here unconditionally and
+                    # only update when we get a non-empty dict-typed result.
+                    if node in ("filings_agent", "compare_agent") and isinstance(raw_output, dict):
+                        cits = raw_output.get("citations")
+                        if cits:
+                            captured_citations = cits
+
                     if node not in nodes_completed:
                         nodes_completed.add(node)
                         if node in node_start_times:
@@ -267,10 +284,15 @@ async def research_stream(
                                 node_name=node,
                                 route=captured_route,
                             ).observe(time.perf_counter() - node_start_times[node])
-                        output       = event.get("data", {}).get("output") or {}
-                        node_summary = _extract_node_output(node, output)
-                        logger.info("stream.node_complete", node=node, ticker=derived_ticker)
-                        await sse_queue.put(node_complete_event(node, node_summary))
+                        output       = raw_output if isinstance(raw_output, dict) else {}
+                        node_failure = (output.get("agent_errors") or {}).get(node)
+                        if node_failure:
+                            logger.warning("stream.node_error", node=node, reason=node_failure, ticker=derived_ticker)
+                            await sse_queue.put(node_error_event(node, node_failure))
+                        else:
+                            node_summary = _extract_node_output(node, output)
+                            logger.info("stream.node_complete", node=node, ticker=derived_ticker)
+                            await sse_queue.put(node_complete_event(node, node_summary))
 
                         if node in ("synthesizer", "compare_agent") and isinstance(output, dict):
                             final_answer = output.get("final_answer")
@@ -281,9 +303,6 @@ async def research_stream(
                             if router_ticker:
                                 derived_ticker = router_ticker
                             logger.info("stream.router_done", route=captured_route, ticker=derived_ticker)
-
-                        if node in ("filings_agent", "compare_agent") and isinstance(output, dict):
-                            captured_citations = output.get("citations") or []
 
         except asyncio.CancelledError:
             # Raised by asyncio.shield inside LangChain's on_chain_end callback when
