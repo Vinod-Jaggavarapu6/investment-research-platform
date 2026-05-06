@@ -179,7 +179,7 @@ async def compare_companies(
     async with get_anthropic_async().messages.stream(
         model=MODEL,
         max_tokens=MAX_TOKENS,
-        system=[{"type": "text", "text": COMPARE_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+        system=[{"type": "text", "text": COMPARE_SYSTEM, "cache_control": {"type": "ephemeral", "ttl": "1h"}}],
         messages=[
             {
                 "role": "user",

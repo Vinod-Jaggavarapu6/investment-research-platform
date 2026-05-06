@@ -130,6 +130,18 @@ def make_synthesizer_node(
             # follow-up references ("that figure", "elaborate on point 3", etc.)
             prior = state.get("messages") or []
             messages = [{"role": m["role"], "content": m["content"]} for m in prior]
+
+            # Cache the prior conversation history so it isn't re-billed each turn.
+            # Mark the last prior message as a cache checkpoint; Claude caches the
+            # entire prefix up to that point and reads it on subsequent turns.
+            if messages:
+                last = messages[-1]
+                c = last["content"]
+                if isinstance(c, str):
+                    last["content"] = [{"type": "text", "text": c, "cache_control": {"type": "ephemeral"}}]
+                elif isinstance(c, list) and c:
+                    c[-1]["cache_control"] = {"type": "ephemeral"}
+
             messages.append({
                 "role": "user",
                 "content": [
@@ -150,7 +162,7 @@ def make_synthesizer_node(
             async with get_anthropic_async().messages.stream(
                 model=MODEL,
                 max_tokens=MAX_TOKENS,
-                system=[{"type": "text", "text": SYNTH_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+                system=[{"type": "text", "text": SYNTH_SYSTEM, "cache_control": {"type": "ephemeral", "ttl": "1h"}}],
                 messages=messages
             ) as stream:
                 async for text in stream.text_stream:

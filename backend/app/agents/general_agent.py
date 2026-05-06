@@ -34,13 +34,22 @@ def make_general_node(
 
             prior = state.get("messages") or []
             messages = [{"role": m["role"], "content": m["content"]} for m in prior]
+
+            if messages:
+                last = messages[-1]
+                c = last["content"]
+                if isinstance(c, str):
+                    last["content"] = [{"type": "text", "text": c, "cache_control": {"type": "ephemeral"}}]
+                elif isinstance(c, list) and c:
+                    c[-1]["cache_control"] = {"type": "ephemeral"}
+
             messages.append({"role": "user", "content": state["question"]})
 
             chunks: list[str] = []
             async with get_anthropic_async().messages.stream(
                 model=MODEL,
                 max_tokens=MAX_TOKENS,
-                system=GENERAL_SYSTEM,
+                system=[{"type": "text", "text": GENERAL_SYSTEM, "cache_control": {"type": "ephemeral", "ttl": "1h"}}],
                 messages=messages,
             ) as stream:
                 async for text in stream.text_stream:
